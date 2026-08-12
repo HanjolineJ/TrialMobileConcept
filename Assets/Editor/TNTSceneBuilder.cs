@@ -7,6 +7,7 @@ using UnityEditor.AdaptivePerformance.Simulator.Editor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.AdaptivePerformance;
+using UnityEngine.AdaptivePerformance.Google.Android;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
@@ -550,10 +551,10 @@ namespace TNTGame.EditorTools
         }
 
         /// <summary>
-        /// Registers the Adaptive Performance Simulator provider (editor/Standalone)
-        /// so the package stops logging "No Provider was configured" at play time.
-        /// Mirrors what the Project Settings UI does when the provider is ticked.
-        /// Device builds would need a real provider package (none installed).
+        /// Registers Adaptive Performance providers so the package stops logging
+        /// "No Provider was configured": the Simulator provider for editor play
+        /// (Standalone) and the Google provider for Android device builds.
+        /// Mirrors what the Project Settings UI does when providers are ticked.
         /// </summary>
         private static void EnsureAdaptivePerformanceProvider()
         {
@@ -570,33 +571,41 @@ namespace TNTGame.EditorTools
                 EditorBuildSettings.AddConfigObject(AdaptivePerformanceGeneralSettings.k_SettingsKey, generalSettings, true);
             }
 
-            // Per-platform settings for the editor (Standalone).
-            AdaptivePerformanceGeneralSettings settings = generalSettings.SettingsForBuildTarget(BuildTargetGroup.Standalone);
+            EnsureProviderForTarget<SimulatorProviderLoader>(generalSettings, BuildTargetGroup.Standalone, "");
+            EnsureProviderForTarget<GoogleAndroidProviderLoader>(generalSettings, BuildTargetGroup.Android, "Android");
+        }
+
+        /// <summary>Creates the settings chain (settings + manager + loader) for one build target group.</summary>
+        private static void EnsureProviderForTarget<TLoader>(
+            AdaptivePerformanceGeneralSettingsPerBuildTarget generalSettings, BuildTargetGroup targetGroup, string assetSuffix)
+            where TLoader : AdaptivePerformanceLoader
+        {
+            const string apSettingsPath = "Assets/Adaptive Performance/Settings";
+
+            AdaptivePerformanceGeneralSettings settings = generalSettings.SettingsForBuildTarget(targetGroup);
             if (settings == null)
             {
                 settings = CreateSettingsAsset<AdaptivePerformanceGeneralSettings>(
-                    $"{apSettingsPath}/AdaptivePerformanceSettings.asset");
+                    $"{apSettingsPath}/AdaptivePerformanceSettings{assetSuffix}.asset");
                 settings.InitManagerOnStart = true;
-                generalSettings.SetSettingsForBuildTarget(BuildTargetGroup.Standalone, settings);
+                generalSettings.SetSettingsForBuildTarget(targetGroup, settings);
                 EditorUtility.SetDirty(generalSettings);
             }
 
-            // Manager holding the loader list.
             AdaptivePerformanceManagerSettings manager = settings.Manager;
             if (manager == null)
             {
                 manager = CreateSettingsAsset<AdaptivePerformanceManagerSettings>(
-                    $"{apSettingsPath}/AdaptivePerformanceManagerSettings.asset");
+                    $"{apSettingsPath}/AdaptivePerformanceManagerSettings{assetSuffix}.asset");
                 settings.Manager = manager;
                 EditorUtility.SetDirty(settings);
             }
 
-            // The Simulator loader itself.
             if (manager.loaders == null)
                 manager.loaders = new List<AdaptivePerformanceLoader>();
-            if (!manager.loaders.Exists(loader => loader is SimulatorProviderLoader))
+            if (!manager.loaders.Exists(loader => loader is TLoader))
             {
-                var loader = CreateSettingsAsset<SimulatorProviderLoader>($"{apSettingsPath}/SimulatorProviderLoader.asset");
+                var loader = CreateSettingsAsset<TLoader>($"{apSettingsPath}/{typeof(TLoader).Name}.asset");
                 List<AdaptivePerformanceLoader> loaders = manager.loaders;
                 loaders.Add(loader);
                 manager.loaders = loaders;
