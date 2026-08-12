@@ -1,8 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
+using UnityEditor.AdaptivePerformance.Editor;
+using UnityEditor.AdaptivePerformance.Simulator.Editor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.AdaptivePerformance;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
@@ -86,6 +90,7 @@ namespace TNTGame.EditorTools
             // --- Project settings ---
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             PlayerSettings.defaultInterfaceOrientation = UIOrientation.Portrait;
+            EnsureAdaptivePerformanceProvider();
 
             AssetDatabase.SaveAssets();
             Debug.Log("[TNT] Level_01 built successfully. Press Play: drag on the building to place TNT, then hit DETONATE.");
@@ -542,6 +547,76 @@ namespace TNTGame.EditorTools
             }
             property.objectReferenceValue = value;
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// Registers the Adaptive Performance Simulator provider (editor/Standalone)
+        /// so the package stops logging "No Provider was configured" at play time.
+        /// Mirrors what the Project Settings UI does when the provider is ticked.
+        /// Device builds would need a real provider package (none installed).
+        /// </summary>
+        private static void EnsureAdaptivePerformanceProvider()
+        {
+            const string apPath = "Assets/Adaptive Performance";
+            const string apSettingsPath = apPath + "/Settings";
+            EnsureFolder(apSettingsPath);
+
+            // General settings container, stored as a build-config object.
+            if (!EditorBuildSettings.TryGetConfigObject(AdaptivePerformanceGeneralSettings.k_SettingsKey,
+                    out AdaptivePerformanceGeneralSettingsPerBuildTarget generalSettings) || generalSettings == null)
+            {
+                generalSettings = CreateSettingsAsset<AdaptivePerformanceGeneralSettingsPerBuildTarget>(
+                    $"{apPath}/AdaptivePerformanceGeneralSettings.asset");
+                EditorBuildSettings.AddConfigObject(AdaptivePerformanceGeneralSettings.k_SettingsKey, generalSettings, true);
+            }
+
+            // Per-platform settings for the editor (Standalone).
+            AdaptivePerformanceGeneralSettings settings = generalSettings.SettingsForBuildTarget(BuildTargetGroup.Standalone);
+            if (settings == null)
+            {
+                settings = CreateSettingsAsset<AdaptivePerformanceGeneralSettings>(
+                    $"{apSettingsPath}/AdaptivePerformanceSettings.asset");
+                settings.InitManagerOnStart = true;
+                generalSettings.SetSettingsForBuildTarget(BuildTargetGroup.Standalone, settings);
+                EditorUtility.SetDirty(generalSettings);
+            }
+
+            // Manager holding the loader list.
+            AdaptivePerformanceManagerSettings manager = settings.Manager;
+            if (manager == null)
+            {
+                manager = CreateSettingsAsset<AdaptivePerformanceManagerSettings>(
+                    $"{apSettingsPath}/AdaptivePerformanceManagerSettings.asset");
+                settings.Manager = manager;
+                EditorUtility.SetDirty(settings);
+            }
+
+            // The Simulator loader itself.
+            if (manager.loaders == null)
+                manager.loaders = new List<AdaptivePerformanceLoader>();
+            if (!manager.loaders.Exists(loader => loader is SimulatorProviderLoader))
+            {
+                var loader = CreateSettingsAsset<SimulatorProviderLoader>($"{apSettingsPath}/SimulatorProviderLoader.asset");
+                List<AdaptivePerformanceLoader> loaders = manager.loaders;
+                loaders.Add(loader);
+                manager.loaders = loaders;
+                EditorUtility.SetDirty(manager);
+            }
+        }
+
+        /// <summary>Creates (or loads) a settings ScriptableObject asset, returning the persistent object.</summary>
+        private static T CreateSettingsAsset<T>(string path) where T : ScriptableObject
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<T>(path);
+            if (existing != null)
+                return existing;
+
+            var instance = ScriptableObject.CreateInstance<T>();
+            AssetDatabase.CreateAsset(instance, path);
+            AssetDatabase.SaveAssets();
+            // Re-load so we hold the authoritative persistent object (the
+            // CreateInstance wrapper may not survive the import intact).
+            return AssetDatabase.LoadAssetAtPath<T>(path);
         }
 
         /// <summary>Returns the first AudioClip under Assets/Audio, or null when none exists.</summary>
