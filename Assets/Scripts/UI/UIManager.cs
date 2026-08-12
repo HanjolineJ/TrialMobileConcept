@@ -23,6 +23,19 @@ namespace TNTGame.UI
         [Tooltip("Button that reloads the level.")]
         [SerializeField] private Button restartButton;
 
+        [Header("Music Toggle")]
+        [Tooltip("Button toggling the background music on/off.")]
+        [SerializeField] private Button musicButton;
+
+        [Tooltip("Icon image inside the music button; its sprite shows the state.")]
+        [SerializeField] private Image musicIcon;
+
+        [Tooltip("Icon shown while music is on (musical note).")]
+        [SerializeField] private Sprite musicOnSprite;
+
+        [Tooltip("Icon shown while music is off (slashed note).")]
+        [SerializeField] private Sprite musicOffSprite;
+
         [Header("Result Panel")]
         [Tooltip("Root object of the result panel, hidden until scoring finishes.")]
         [SerializeField] private GameObject resultPanel;
@@ -59,6 +72,8 @@ namespace TNTGame.UI
                 detonateButton.onClick.AddListener(gm.Detonate);
             if (restartButton != null)
                 restartButton.onClick.AddListener(gm.RestartLevel);
+            if (musicButton != null)
+                musicButton.onClick.AddListener(HandleMusicClicked);
 
             if (resultPanel != null)
                 resultPanel.SetActive(false);
@@ -67,6 +82,7 @@ namespace TNTGame.UI
             // this script subscribed.
             HandleTntCountChanged(gm.TntRemaining);
             HandleStateChanged(gm.State);
+            UpdateMusicIcon();
         }
 
         private void OnDestroy()
@@ -95,6 +111,23 @@ namespace TNTGame.UI
             // where the result panel is visible.
             if (restartButton != null)
                 restartButton.interactable = true;
+        }
+
+        private void HandleMusicClicked()
+        {
+            if (AudioManager.Instance == null)
+                return;
+
+            AudioManager.Instance.ToggleMusic();
+            UpdateMusicIcon();
+        }
+
+        private void UpdateMusicIcon()
+        {
+            // Default to the "on" icon when no AudioManager exists.
+            bool isOn = AudioManager.Instance == null || AudioManager.Instance.IsMusicOn;
+            if (musicIcon != null)
+                musicIcon.sprite = isOn ? musicOnSprite : musicOffSprite;
         }
 
         private void HandleLevelScored(float percent, int stars)

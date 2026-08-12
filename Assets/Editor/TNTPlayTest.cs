@@ -37,11 +37,21 @@ namespace TNTGame.EditorTools
             Restarting = 3
         }
 
+        /// <summary>Thrown by Fail to abort the current tick; caught in Tick.</summary>
+        private sealed class TestFailedException : Exception
+        {
+            public TestFailedException(string message) : base(message) { }
+        }
+
         [MenuItem("TNT/Run Play Test")]
         public static void BuildAndPlayTest()
         {
             if (!File.Exists(ScenePath))
                 TNTSceneBuilder.BuildAll();
+
+            // Deterministic music state: start from the default (on).
+            PlayerPrefs.DeleteKey("TNT.MusicOn");
+            PlayerPrefs.Save();
 
             EditorSceneManager.OpenScene(ScenePath);
             SessionState.SetBool(RunningKey, true);
@@ -66,12 +76,23 @@ namespace TNTGame.EditorTools
                 return;
             }
 
-            if (EditorApplication.timeSinceStartup > SessionState.GetFloat(DeadlineKey, 0f))
+            try
             {
-                Fail("Timed out.");
-                return;
-            }
+                if (EditorApplication.timeSinceStartup > SessionState.GetFloat(DeadlineKey, 0f))
+                    Fail("Timed out.");
 
+                TickPhase();
+            }
+            catch (TestFailedException)
+            {
+                // Fail() already logged the reason and finished the run; the
+                // throw just stops the current tick from running on with a
+                // known-bad state (and producing misleading follow-up errors).
+            }
+        }
+
+        private static void TickPhase()
+        {
             GameManager gm = GameManager.Instance;
             switch ((Phase)SessionState.GetInt(PhaseKey, 0))
             {
@@ -85,6 +106,17 @@ namespace TNTGame.EditorTools
                     Expect(gm.TntRemaining == gm.Data.tntCount, "TNT count should start full.");
                     Expect(UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length == 1,
                         "Exactly one AudioListener must be present.");
+
+                    // Music toggle via the HUD button (real EventSystem clicks).
+                    Expect(AudioManager.Instance != null, "AudioManager missing from the scene.");
+                    Expect(AudioManager.Instance.IsMusicOn, "Music should default to on.");
+                    ClickButton("MusicButton");
+                    Expect(!AudioManager.Instance.IsMusicOn, "Music button should toggle music off.");
+                    ClickButton("MusicButton");
+                    Expect(AudioManager.Instance.IsMusicOn, "Music button should toggle music back on.");
+
+                    // Visual verification artifact (read back after the run).
+                    ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_start.png"));
                     SessionState.SetInt(PhaseKey, (int)Phase.PlaceCharges);
                     break;
                 }
@@ -114,7 +146,9 @@ namespace TNTGame.EditorTools
                     Expect(gm.ScorePercent > 10f, "Blast should destroy a measurable share of the building.");
                     Expect(gm.Stars >= 1 && gm.Stars <= 3, "Stars must be within 1..3.");
 
-                    ClickRestartButton();
+                    // Result panel (logo + stars) visible at this point.
+                    ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_result.png"));
+                    ClickButton("RestartButton");
                     SessionState.SetInt(PhaseKey, (int)Phase.Restarting);
                     break;
                 }
@@ -128,6 +162,8 @@ namespace TNTGame.EditorTools
                     Expect(gm.BlockCount == gm.Data.columns * gm.Data.rows, "All blocks should be back after restart.");
                     Expect(UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length == 1,
                         "Exactly one AudioListener must be present after restart.");
+                    Expect(AudioManager.Instance != null && AudioManager.Instance.IsMusicOn,
+                        "Music preference should persist across the restart.");
                     Pass();
                     break;
                 }
@@ -135,14 +171,15 @@ namespace TNTGame.EditorTools
         }
 
         /// <summary>
-        /// Restarts through the real UI path: raycasts at the restart button's
-        /// screen position (fails if the result panel blocks it) and then fires
-        /// a genuine pointer click through the EventSystem.
+        /// Clicks a HUD button through the real UI path: raycasts at the button's
+        /// screen position (fails if something else, e.g. the result panel,
+        /// intercepts the click) and then fires a genuine pointer click through
+        /// the EventSystem.
         /// </summary>
-        private static void ClickRestartButton()
+        private static void ClickButton(string buttonName)
         {
-            var restartGo = GameObject.Find("RestartButton");
-            Expect(restartGo != null, "RestartButton not found in the scene.");
+            var buttonGo = GameObject.Find(buttonName);
+            Expect(buttonGo != null, $"{buttonName} not found in the scene.");
 
             var eventSystem = EventSystem.current;
             Expect(eventSystem != null, "No EventSystem in the scene.");
@@ -152,19 +189,19 @@ namespace TNTGame.EditorTools
 
             var pointer = new PointerEventData(eventSystem)
             {
-                position = restartGo.transform.position, // overlay canvas: world == screen
+                position = buttonGo.transform.position, // overlay canvas: world == screen
                 button = PointerEventData.InputButton.Left
             };
 
             var results = new List<RaycastResult>();
             raycaster.Raycast(pointer, results);
-            Expect(results.Count > 0, "Nothing hit at the restart button's position.");
+            Expect(results.Count > 0, $"Nothing hit at {buttonName}'s position.");
 
             GameObject clickTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(results[0].gameObject);
-            Expect(clickTarget == restartGo,
-                $"Restart blocked by '{results[0].gameObject.name}' — the result panel must not intercept clicks.");
+            Expect(clickTarget == buttonGo,
+                $"{buttonName} blocked by '{results[0].gameObject.name}' — no overlay may intercept clicks.");
 
-            ExecuteEvents.Execute(restartGo, pointer, ExecuteEvents.pointerClickHandler);
+            ExecuteEvents.Execute(buttonGo, pointer, ExecuteEvents.pointerClickHandler);
         }
 
         private static void Expect(bool condition, string message)
@@ -183,6 +220,7 @@ namespace TNTGame.EditorTools
         {
             Debug.LogError($"[TNT] Play test FAILED: {reason}");
             Finish(1);
+            throw new TestFailedException(reason);
         }
 
         private static void Finish(int exitCode)

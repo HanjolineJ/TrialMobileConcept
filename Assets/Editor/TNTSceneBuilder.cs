@@ -1,13 +1,8 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
-using UnityEditor.AdaptivePerformance.Editor;
-using UnityEditor.AdaptivePerformance.Simulator.Editor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.AdaptivePerformance;
-using UnityEngine.AdaptivePerformance.Google.Android;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
@@ -33,6 +28,7 @@ namespace TNTGame.EditorTools
     {
         private const string ScenePath = "Assets/Scenes/Level_01.unity";
         private const string ArtPath = "Assets/Art";
+        private const string AudioPath = "Assets/Audio";
         private const string PrefabPath = "Assets/Prefabs/Gameplay";
         private const string DataPath = "Assets/Data";
 
@@ -67,16 +63,14 @@ namespace TNTGame.EditorTools
             EnsureFolder(DataPath);
 
             // --- Placeholder sprites (procedurally rasterised PNGs) ---
-            // Ninjago S6 "Skybound" sky-pirate palette: stormy blue-black sky,
-            // teal ocean glow, weathered wood, cursed djinn gold.
             Sprite blockSprite = CreateSprite($"{ArtPath}/Block.png", 64, ShadeBlock);
             Sprite tntSprite = CreateSprite($"{ArtPath}/TNT.png", 64, ShadeTnt);
-            Sprite starFilledSprite = CreateSprite($"{ArtPath}/StarFilled.png", 64, StarShade(new Color(0.90f, 0.70f, 0.25f))); // gold
-            Sprite starEmptySprite = CreateSprite($"{ArtPath}/StarEmpty.png", 64, StarShade(new Color(0.16f, 0.22f, 0.32f)));  // dark blue
+            Sprite starFilledSprite = CreateSprite($"{ArtPath}/StarFilled.png", 64, StarShade(new Color(1f, 0.85f, 0.15f)));
+            Sprite starEmptySprite = CreateSprite($"{ArtPath}/StarEmpty.png", 64, StarShade(new Color(0.45f, 0.45f, 0.5f)));
             Sprite ringSprite = CreateSprite($"{ArtPath}/Ring.png", 64, ShadeRing);
             Sprite pixelSprite = CreateSprite($"{ArtPath}/Pixel.png", 4, (x, y) => Color.white);
-            Sprite backgroundSprite = CreateSprite($"{ArtPath}/Background.png", 64, ShadeBackground);
-            Sprite seaSprite = CreateSprite($"{ArtPath}/Sea.png", 64, ShadeSea);
+            Sprite musicOnSprite = CreateSprite($"{ArtPath}/MusicOn.png", 64, (x, y) => ShadeMusicNote(x, y, false));
+            Sprite musicOffSprite = CreateSprite($"{ArtPath}/MusicOff.png", 64, (x, y) => ShadeMusicNote(x, y, true));
 
             // --- Prefabs ---
             GameObject blockPrefab = CreateBlockPrefab(blockSprite);
@@ -86,12 +80,12 @@ namespace TNTGame.EditorTools
             LevelData levelData = CreateLevelData(blockPrefab);
 
             // --- Scene ---
-            BuildScene(levelData, chargePrefab, ringSprite, pixelSprite, backgroundSprite, seaSprite, starFilledSprite, starEmptySprite);
+            BuildScene(levelData, chargePrefab, ringSprite, pixelSprite, starFilledSprite, starEmptySprite,
+                musicOnSprite, musicOffSprite);
 
             // --- Project settings ---
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             PlayerSettings.defaultInterfaceOrientation = UIOrientation.Portrait;
-            EnsureAdaptivePerformanceProvider();
 
             AssetDatabase.SaveAssets();
             Debug.Log("[TNT] Level_01 built successfully. Press Play: drag on the building to place TNT, then hit DETONATE.");
@@ -136,97 +130,42 @@ namespace TNTGame.EditorTools
             return AssetDatabase.LoadAssetAtPath<Sprite>(path);
         }
 
-        // Weathered wood plank: dark timber with grain, steel banding top and
-        // bottom, a deep-navy border and a subtle gold-lit top edge.
         private static Color ShadeBlock(float x, float y)
         {
             const float border = 5f;
-            if (y >= 64f - 3f)
-                return new Color(0.80f, 0.62f, 0.28f); // gold top edge
-            if (x < border || x >= 64f - border || y < border)
-                return new Color(0.07f, 0.11f, 0.20f); // deep navy border
-            if ((y >= 9f && y < 14f) || (y >= 50f && y < 55f))
-                return new Color(0.24f, 0.27f, 0.33f); // steel banding
-            // Wood grain: soft vertical streaks via stretched value noise.
-            float grain = 0.82f + 0.36f * ValueNoise(x * 0.35f, y * 0.05f);
-            return new Color(0.30f * grain, 0.22f * grain, 0.15f * grain);
+            bool isBorder = x < border || x >= 64f - border || y < border || y >= 64f - border;
+            return isBorder ? new Color(0.72f, 0.70f, 0.68f) : new Color(0.94f, 0.92f, 0.88f);
         }
 
-        // Cursed charge: a djinn coin — bright gold disc, darker rim and
-        // embossed inner ring, pale highlight at the core.
         private static Color ShadeTnt(float x, float y)
         {
-            float d = Vector2.Distance(new Vector2(x, y), new Vector2(32f, 32f));
-            if (d > 28f) return Color.clear;
-            if (d > 23f) return new Color(0.45f, 0.32f, 0.10f); // dark rim
-            if (d > 12f) return new Color(0.85f, 0.65f, 0.22f); // gold face
-            if (d > 8f)  return new Color(0.55f, 0.40f, 0.12f); // embossed ring
-            return new Color(0.95f, 0.82f, 0.45f);              // pale core
-        }
-
-        // Stormy sky over a dark sea: turbulent clouds above, a teal ocean
-        // glow at the horizon (t ~ 0.26), waves below.
-        private static Color ShadeBackground(float x, float y)
-        {
-            float t = y / 63f;
-            const float horizon = 0.26f;
-
-            if (t < horizon)
-            {
-                // Sea: deep storm blue with slow horizontal wave streaks.
-                float waves = ValueNoise(x * 0.30f, y * 1.8f);
-                return new Color(0.03f, 0.06f, 0.12f) + new Color(0.04f, 0.10f, 0.13f) * waves;
-            }
-
-            // Sky: blue-black at the top, slightly lighter storm blue low.
-            float s = (t - horizon) / (1f - horizon);
-            Color sky = Color.Lerp(new Color(0.05f, 0.08f, 0.16f), new Color(0.015f, 0.025f, 0.07f), s);
-
-            // Turbulent clouds drifting through the sky region.
-            float clouds = ValueNoise(x * 0.09f, y * 0.22f) * 0.6f + ValueNoise(x * 0.21f, y * 0.45f) * 0.4f;
-            sky += new Color(0.09f, 0.13f, 0.20f) * clouds * (1f - s * 0.5f);
-
-            // Teal glow hugging the horizon.
-            float glow = Mathf.Max(0f, 1f - Mathf.Abs(t - horizon) / 0.10f);
-            return sky + new Color(0.10f, 0.55f, 0.55f) * glow * glow * 0.45f;
-        }
-
-        // Stormy sea surface for the ground: dark waves with foam flecks.
-        private static Color ShadeSea(float x, float y)
-        {
-            float waves = ValueNoise(x * 0.25f, y * 0.9f);
-            Color sea = new Color(0.03f, 0.07f, 0.14f) + new Color(0.05f, 0.12f, 0.16f) * waves;
-            float foam = ValueNoise(x * 0.8f, y * 2.6f);
-            if (foam > 0.82f)
-                sea += new Color(0.25f, 0.45f, 0.45f) * (foam - 0.82f) * 3f; // foam highlights
-            return sea;
-        }
-
-        /// <summary>Deterministic smoothed value noise (lattice hash + bilinear).</summary>
-        private static float ValueNoise(float x, float y)
-        {
-            int xi = Mathf.FloorToInt(x), yi = Mathf.FloorToInt(y);
-            float xf = Mathf.SmoothStep(0f, 1f, x - xi);
-            float yf = Mathf.SmoothStep(0f, 1f, y - yi);
-            float a = Hash01(xi, yi), b = Hash01(xi + 1, yi);
-            float c = Hash01(xi, yi + 1), d = Hash01(xi + 1, yi + 1);
-            return Mathf.Lerp(Mathf.Lerp(a, b, xf), Mathf.Lerp(c, d, xf), yf);
-        }
-
-        private static float Hash01(int x, int y)
-        {
-            unchecked
-            {
-                int h = x * 374761393 + y * 668265263;
-                h = (h ^ (h >> 13)) * 1274126177;
-                return ((h ^ (h >> 16)) & 0xffff) / 65535f;
-            }
+            if (y < 7f || y >= 57f)
+                return new Color(0.42f, 0.07f, 0.05f); // dark top/bottom bands
+            if (x >= 12f && x < 20f)
+                return new Color(0.95f, 0.35f, 0.25f); // highlight stripe
+            return new Color(0.78f, 0.16f, 0.12f);     // red body
         }
 
         private static Color ShadeRing(float x, float y)
         {
             float d = Vector2.Distance(new Vector2(x, y), new Vector2(32f, 32f));
             return d >= 24f && d <= 30f ? Color.white : Color.clear;
+        }
+
+        /// <summary>
+        /// Placeholder music-toggle icon: a white quaver (ellipse head + stem).
+        /// The "off" variant carves out a diagonal band, reading as a slash.
+        /// </summary>
+        private static Color ShadeMusicNote(float x, float y, bool slashed)
+        {
+            float hx = (x - 26f) / 12f, hy = (y - 20f) / 9f;
+            bool head = hx * hx + hy * hy <= 1f;
+            bool stem = x >= 35f && x < 41f && y >= 20f && y <= 52f;
+            if (!head && !stem)
+                return Color.clear;
+            if (slashed && Mathf.Abs(x - y) < 6f)
+                return Color.clear;
+            return Color.white;
         }
 
         private static Func<float, float, Color> StarShade(Color fill)
@@ -316,7 +255,8 @@ namespace TNTGame.EditorTools
         // ------------------------------------------------------------------
 
         private static void BuildScene(LevelData levelData, GameObject chargePrefab, Sprite ringSprite,
-            Sprite pixelSprite, Sprite backgroundSprite, Sprite seaSprite, Sprite starFilledSprite, Sprite starEmptySprite)
+            Sprite pixelSprite, Sprite starFilledSprite, Sprite starEmptySprite,
+            Sprite musicOnSprite, Sprite musicOffSprite)
         {
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -328,31 +268,20 @@ namespace TNTGame.EditorTools
             cam.orthographic = true;
             cam.orthographicSize = 4f;
             cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = new Color(0.015f, 0.025f, 0.07f); // stormy blue-black
-            // Programmatically created cameras get no AudioListener by default.
+            cam.backgroundColor = new Color(0.12f, 0.14f, 0.18f);
             cameraGo.AddComponent<AudioListener>();
 
-            // Gradient sky backdrop: turbulent clouds over a dark sea horizon.
-            CreateWorldSprite("Background", backgroundSprite, Color.white,
-                new Vector3(0f, 2f, 5f), new Vector3(24f, 14f, 1f), -10);
-
-            // Ground — stormy sea surface; static collider so debris lands
-            // instead of falling forever.
-            GameObject ground = CreateWorldSprite("Ground", seaSprite, Color.white,
+            // Ground — static collider so debris lands instead of falling forever.
+            GameObject ground = CreateWorldSprite("Ground", pixelSprite, new Color(0.24f, 0.25f, 0.29f),
                 new Vector3(0f, -0.5f, 0f), new Vector3(16f, 1f, 1f), 0);
             ground.AddComponent<BoxCollider2D>().size = Vector2.one; // 16x1 world units after scale
 
-            // Foam rim on the waterline.
-            CreateWorldSprite("GroundRim", pixelSprite, new Color(0.30f, 0.70f, 0.65f, 0.9f),
-                new Vector3(0f, 0.02f, 0f), new Vector3(16f, 0.05f, 1f), 1);
-
-            // Demolition line marker — shimmering teal energy
-            // (LevelSetup snaps it to the configured Y).
-            GameObject line = CreateWorldSprite("DemolitionLine", pixelSprite, new Color(0.25f, 0.85f, 0.90f, 0.9f),
+            // Demolition line marker (LevelSetup snaps it to the configured Y).
+            GameObject line = CreateWorldSprite("DemolitionLine", pixelSprite, new Color(0.9f, 0.2f, 0.2f, 0.9f),
                 new Vector3(0f, levelData.demolitionLineY, 0f), new Vector3(16f, 0.05f, 1f), 1);
 
             // Placement indicator (hidden until the player touches).
-            GameObject indicator = CreateWorldSprite("PlacementIndicator", ringSprite, new Color(0.25f, 0.9f, 0.8f, 0.65f),
+            GameObject indicator = CreateWorldSprite("PlacementIndicator", ringSprite, new Color(0.2f, 1f, 0.3f, 0.65f),
                 Vector3.zero, new Vector3(0.7f, 0.7f, 1f), 10);
             indicator.SetActive(false);
 
@@ -370,26 +299,20 @@ namespace TNTGame.EditorTools
             SetRef(placement, "chargePrefab", chargePrefab);
             SetRef(placement, "indicator", indicator.GetComponent<SpriteRenderer>());
             SetRef(placement, "worldCamera", cam);
-            SetColor(placement, "validColor", new Color(0.25f, 0.9f, 0.8f, 0.65f));   // teal
-            SetColor(placement, "invalidColor", new Color(0.9f, 0.3f, 0.25f, 0.45f)); // warning red
 
-            // Music — persistent AudioManager; auto-wires the first audio clip
-            // found in Assets/Audio (see README there for licensing/replacement).
+            // Persistent music player (survives the scene reload on restart).
+            // Null tracks are tolerated: AudioManager warns and plays silence.
             var audioGo = new GameObject("AudioManager");
-            audioGo.AddComponent<AudioSource>();
             var audio = audioGo.AddComponent<AudioManager>();
-            AudioClip music = FindMusicClip();
-            if (music != null)
-                SetRef(audio, "musicTrack", music);
-            else
-                Debug.LogWarning("[TNT] No music file found in Assets/Audio — music will be silent. See Assets/Audio/README.md.");
+            SetRef(audio, "musicTrack", AssetDatabase.LoadAssetAtPath<AudioClip>($"{AudioPath}/Music_MainTheme.mp3"));
+            SetRef(audio, "ambienceTrack", AssetDatabase.LoadAssetAtPath<AudioClip>($"{AudioPath}/Music_Ambience.mp3"));
 
             // UI.
             var eventSystemGo = new GameObject("EventSystem");
             eventSystemGo.AddComponent<EventSystem>();
             eventSystemGo.AddComponent<StandaloneInputModule>();
 
-            BuildCanvas(gm, starFilledSprite, starEmptySprite);
+            BuildCanvas(gm, starFilledSprite, starEmptySprite, musicOnSprite, musicOffSprite);
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -408,7 +331,8 @@ namespace TNTGame.EditorTools
             return go;
         }
 
-        private static void BuildCanvas(GameManager gm, Sprite starFilledSprite, Sprite starEmptySprite)
+        private static void BuildCanvas(GameManager gm, Sprite starFilledSprite, Sprite starEmptySprite,
+            Sprite musicOnSprite, Sprite musicOffSprite)
         {
             var canvasGo = new GameObject("Canvas");
             var canvas = canvasGo.AddComponent<Canvas>();
@@ -422,17 +346,21 @@ namespace TNTGame.EditorTools
 
             // HUD: TNT counter (top-left).
             Text tntText = CreateText("TNTText", canvasGo.transform, "TNT: 3", 56,
-                TextAnchor.MiddleLeft, new Vector2(0f, 1f), new Vector2(40f, -40f), new Vector2(420f, 110f),
-                new Color(0.95f, 0.87f, 0.68f)); // pale gold
+                TextAnchor.MiddleLeft, new Vector2(0f, 1f), new Vector2(40f, -40f), new Vector2(420f, 110f));
 
-            // HUD: restart button (top-right) — teal.
+            // HUD: restart button (top-right).
             Button restartButton = CreateButton("RestartButton", canvasGo.transform, "RESTART", 34,
-                new Color(0.14f, 0.42f, 0.48f), new Vector2(1f, 1f), new Vector2(-40f, -40f), new Vector2(300f, 110f));
+                new Color(0.28f, 0.31f, 0.38f), new Vector2(1f, 1f), new Vector2(-40f, -40f), new Vector2(300f, 110f));
 
-            // HUD: detonate button (bottom centre) — pirate gold, navy label.
+            // HUD: music toggle (top-right, left of restart). Icon shows the state.
+            Button musicButton = CreateButton("MusicButton", canvasGo.transform, "", 34,
+                new Color(0.28f, 0.31f, 0.38f), new Vector2(1f, 1f), new Vector2(-380f, -40f), new Vector2(110f, 110f));
+            Object.DestroyImmediate(musicButton.transform.Find("Label").gameObject);
+            Image musicIcon = CreateIcon(musicButton.transform, musicOnSprite);
+
+            // HUD: detonate button (bottom centre).
             Button detonateButton = CreateButton("DetonateButton", canvasGo.transform, "DETONATE", 46,
-                new Color(0.80f, 0.60f, 0.20f), new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(460f, 170f),
-                new Color(0.05f, 0.08f, 0.15f));
+                new Color(0.85f, 0.3f, 0.1f), new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(460f, 170f));
 
             // Result panel (hidden until scoring finishes).
             var panelGo = new GameObject("ResultPanel", typeof(RectTransform), typeof(Image));
@@ -442,16 +370,10 @@ namespace TNTGame.EditorTools
             panelRect.anchorMax = Vector2.one;
             panelRect.offsetMin = Vector2.zero;
             panelRect.offsetMax = Vector2.zero;
-            var panelImage = panelGo.GetComponent<Image>();
-            panelImage.color = new Color(0.02f, 0.04f, 0.09f, 0.92f);
-            // Must NOT block raycasts: the panel covers the whole screen and would
-            // otherwise swallow every click, making the HUD buttons (restart!)
-            // unresponsive while it is visible.
-            panelImage.raycastTarget = false;
+            panelGo.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.85f);
 
             CreateText("ResultTitle", panelGo.transform, "LEVEL COMPLETE", 64,
-                TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, 430f), new Vector2(900f, 130f),
-                new Color(0.45f, 0.75f, 0.95f)); // sky blue
+                TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, 430f), new Vector2(900f, 130f));
             Text scoreText = CreateText("ScoreText", panelGo.transform, "Destroyed: 0%", 52,
                 TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, 250f), new Vector2(900f, 110f));
 
@@ -475,6 +397,10 @@ namespace TNTGame.EditorTools
             SetRef(ui, "tntCountText", tntText);
             SetRef(ui, "detonateButton", detonateButton);
             SetRef(ui, "restartButton", restartButton);
+            SetRef(ui, "musicButton", musicButton);
+            SetRef(ui, "musicIcon", musicIcon);
+            SetRef(ui, "musicOnSprite", musicOnSprite);
+            SetRef(ui, "musicOffSprite", musicOffSprite);
             SetRef(ui, "resultPanel", panelGo);
             SetRef(ui, "scoreText", scoreText);
             SetRef(ui, "starFilledSprite", starFilledSprite);
@@ -495,7 +421,7 @@ namespace TNTGame.EditorTools
         // Legacy UI Text with the built-in font: renders everywhere without
         // importing TMP essentials first. Placeholder-grade; swap for TMP later.
         private static Text CreateText(string name, Transform parent, string content, int fontSize,
-            TextAnchor alignment, Vector2 anchor, Vector2 anchoredPosition, Vector2 size, Color? color = null)
+            TextAnchor alignment, Vector2 anchor, Vector2 anchoredPosition, Vector2 size)
         {
             var go = new GameObject(name, typeof(RectTransform));
             go.transform.SetParent(parent, false);
@@ -508,13 +434,13 @@ namespace TNTGame.EditorTools
             text.text = content;
             text.fontSize = fontSize;
             text.alignment = alignment;
-            text.color = color ?? Color.white;
+            text.color = Color.white;
             text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             return text;
         }
 
         private static Button CreateButton(string name, Transform parent, string label, int fontSize,
-            Color color, Vector2 anchor, Vector2 anchoredPosition, Vector2 size, Color? labelColor = null)
+            Color color, Vector2 anchor, Vector2 anchoredPosition, Vector2 size)
         {
             var go = new GameObject(name, typeof(RectTransform), typeof(Image));
             go.transform.SetParent(parent, false);
@@ -525,7 +451,7 @@ namespace TNTGame.EditorTools
             go.GetComponent<Image>().color = color;
 
             Text text = CreateText("Label", go.transform, label, fontSize,
-                TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), Vector2.zero, size, labelColor);
+                TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), Vector2.zero, size);
             text.rectTransform.anchorMin = Vector2.zero;
             text.rectTransform.anchorMax = Vector2.one;
             text.rectTransform.offsetMin = Vector2.zero;
@@ -534,6 +460,23 @@ namespace TNTGame.EditorTools
             var button = go.AddComponent<Button>();
             button.targetGraphic = go.GetComponent<Image>();
             return button;
+        }
+
+        /// <summary>Adds a centred icon image to a button, padded in from the edges.</summary>
+        private static Image CreateIcon(Transform parent, Sprite sprite)
+        {
+            var go = new GameObject("Icon", typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, false);
+            var rect = (RectTransform)go.transform;
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = new Vector2(25f, 25f);
+            rect.offsetMax = new Vector2(-25f, -25f);
+
+            var image = go.GetComponent<Image>();
+            image.sprite = sprite;
+            image.preserveAspect = true;
+            return image;
         }
 
         /// <summary>Assigns a private [SerializeField] reference from editor code.</summary>
@@ -547,114 +490,6 @@ namespace TNTGame.EditorTools
                 return;
             }
             property.objectReferenceValue = value;
-            so.ApplyModifiedPropertiesWithoutUndo();
-        }
-
-        /// <summary>
-        /// Registers Adaptive Performance providers so the package stops logging
-        /// "No Provider was configured": the Simulator provider for editor play
-        /// (Standalone) and the Google provider for Android device builds.
-        /// Mirrors what the Project Settings UI does when providers are ticked.
-        /// </summary>
-        private static void EnsureAdaptivePerformanceProvider()
-        {
-            const string apPath = "Assets/Adaptive Performance";
-            const string apSettingsPath = apPath + "/Settings";
-            EnsureFolder(apSettingsPath);
-
-            // General settings container, stored as a build-config object.
-            if (!EditorBuildSettings.TryGetConfigObject(AdaptivePerformanceGeneralSettings.k_SettingsKey,
-                    out AdaptivePerformanceGeneralSettingsPerBuildTarget generalSettings) || generalSettings == null)
-            {
-                generalSettings = CreateSettingsAsset<AdaptivePerformanceGeneralSettingsPerBuildTarget>(
-                    $"{apPath}/AdaptivePerformanceGeneralSettings.asset");
-                EditorBuildSettings.AddConfigObject(AdaptivePerformanceGeneralSettings.k_SettingsKey, generalSettings, true);
-            }
-
-            EnsureProviderForTarget<SimulatorProviderLoader>(generalSettings, BuildTargetGroup.Standalone, "");
-            EnsureProviderForTarget<GoogleAndroidProviderLoader>(generalSettings, BuildTargetGroup.Android, "Android");
-        }
-
-        /// <summary>Creates the settings chain (settings + manager + loader) for one build target group.</summary>
-        private static void EnsureProviderForTarget<TLoader>(
-            AdaptivePerformanceGeneralSettingsPerBuildTarget generalSettings, BuildTargetGroup targetGroup, string assetSuffix)
-            where TLoader : AdaptivePerformanceLoader
-        {
-            const string apSettingsPath = "Assets/Adaptive Performance/Settings";
-
-            AdaptivePerformanceGeneralSettings settings = generalSettings.SettingsForBuildTarget(targetGroup);
-            if (settings == null)
-            {
-                settings = CreateSettingsAsset<AdaptivePerformanceGeneralSettings>(
-                    $"{apSettingsPath}/AdaptivePerformanceSettings{assetSuffix}.asset");
-                settings.InitManagerOnStart = true;
-                generalSettings.SetSettingsForBuildTarget(targetGroup, settings);
-                EditorUtility.SetDirty(generalSettings);
-            }
-
-            AdaptivePerformanceManagerSettings manager = settings.Manager;
-            if (manager == null)
-            {
-                manager = CreateSettingsAsset<AdaptivePerformanceManagerSettings>(
-                    $"{apSettingsPath}/AdaptivePerformanceManagerSettings{assetSuffix}.asset");
-                settings.Manager = manager;
-                EditorUtility.SetDirty(settings);
-            }
-
-            if (manager.loaders == null)
-                manager.loaders = new List<AdaptivePerformanceLoader>();
-            if (!manager.loaders.Exists(loader => loader is TLoader))
-            {
-                var loader = CreateSettingsAsset<TLoader>($"{apSettingsPath}/{typeof(TLoader).Name}.asset");
-                List<AdaptivePerformanceLoader> loaders = manager.loaders;
-                loaders.Add(loader);
-                manager.loaders = loaders;
-                EditorUtility.SetDirty(manager);
-            }
-        }
-
-        /// <summary>Creates (or loads) a settings ScriptableObject asset, returning the persistent object.</summary>
-        private static T CreateSettingsAsset<T>(string path) where T : ScriptableObject
-        {
-            var existing = AssetDatabase.LoadAssetAtPath<T>(path);
-            if (existing != null)
-                return existing;
-
-            var instance = ScriptableObject.CreateInstance<T>();
-            AssetDatabase.CreateAsset(instance, path);
-            AssetDatabase.SaveAssets();
-            // Re-load so we hold the authoritative persistent object (the
-            // CreateInstance wrapper may not survive the import intact).
-            return AssetDatabase.LoadAssetAtPath<T>(path);
-        }
-
-        /// <summary>Returns the first AudioClip under Assets/Audio, or null when none exists.</summary>
-        private static AudioClip FindMusicClip()
-        {
-            if (!AssetDatabase.IsValidFolder("Assets/Audio"))
-                return null;
-
-            foreach (string guid in AssetDatabase.FindAssets("t:AudioClip", new[] { "Assets/Audio" }))
-            {
-                string path = AssetDatabase.GUIDToAssetPath(guid);
-                var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
-                if (clip != null)
-                    return clip;
-            }
-            return null;
-        }
-
-        /// <summary>Assigns a private [SerializeField] Color from editor code.</summary>
-        private static void SetColor(Object target, string propertyName, Color value)
-        {
-            var so = new SerializedObject(target);
-            SerializedProperty property = so.FindProperty(propertyName);
-            if (property == null)
-            {
-                Debug.LogError($"[TNT] Property '{propertyName}' not found on {target.GetType().Name}.");
-                return;
-            }
-            property.colorValue = value;
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
