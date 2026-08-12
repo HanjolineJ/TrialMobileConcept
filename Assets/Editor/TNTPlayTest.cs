@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 using TNTGame.Core;
 
 namespace TNTGame.EditorTools
@@ -80,6 +83,8 @@ namespace TNTGame.EditorTools
                     int expected = gm.Data.columns * gm.Data.rows;
                     Expect(gm.BlockCount == expected, $"Expected {expected} blocks, found {gm.BlockCount}.");
                     Expect(gm.TntRemaining == gm.Data.tntCount, "TNT count should start full.");
+                    Expect(UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length == 1,
+                        "Exactly one AudioListener must be present.");
                     SessionState.SetInt(PhaseKey, (int)Phase.PlaceCharges);
                     break;
                 }
@@ -109,7 +114,7 @@ namespace TNTGame.EditorTools
                     Expect(gm.ScorePercent > 10f, "Blast should destroy a measurable share of the building.");
                     Expect(gm.Stars >= 1 && gm.Stars <= 3, "Stars must be within 1..3.");
 
-                    gm.RestartLevel();
+                    ClickRestartButton();
                     SessionState.SetInt(PhaseKey, (int)Phase.Restarting);
                     break;
                 }
@@ -121,10 +126,45 @@ namespace TNTGame.EditorTools
 
                     Expect(gm.TntRemaining == gm.Data.tntCount, "TNT count should be restored after restart.");
                     Expect(gm.BlockCount == gm.Data.columns * gm.Data.rows, "All blocks should be back after restart.");
+                    Expect(UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length == 1,
+                        "Exactly one AudioListener must be present after restart.");
                     Pass();
                     break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Restarts through the real UI path: raycasts at the restart button's
+        /// screen position (fails if the result panel blocks it) and then fires
+        /// a genuine pointer click through the EventSystem.
+        /// </summary>
+        private static void ClickRestartButton()
+        {
+            var restartGo = GameObject.Find("RestartButton");
+            Expect(restartGo != null, "RestartButton not found in the scene.");
+
+            var eventSystem = EventSystem.current;
+            Expect(eventSystem != null, "No EventSystem in the scene.");
+
+            var raycaster = UnityEngine.Object.FindFirstObjectByType<GraphicRaycaster>();
+            Expect(raycaster != null, "No GraphicRaycaster in the scene.");
+
+            var pointer = new PointerEventData(eventSystem)
+            {
+                position = restartGo.transform.position, // overlay canvas: world == screen
+                button = PointerEventData.InputButton.Left
+            };
+
+            var results = new List<RaycastResult>();
+            raycaster.Raycast(pointer, results);
+            Expect(results.Count > 0, "Nothing hit at the restart button's position.");
+
+            GameObject clickTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(results[0].gameObject);
+            Expect(clickTarget == restartGo,
+                $"Restart blocked by '{results[0].gameObject.name}' — the result panel must not intercept clicks.");
+
+            ExecuteEvents.Execute(restartGo, pointer, ExecuteEvents.pointerClickHandler);
         }
 
         private static void Expect(bool condition, string message)

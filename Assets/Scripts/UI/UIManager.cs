@@ -87,10 +87,14 @@ namespace TNTGame.UI
 
         private void HandleStateChanged(LevelState state)
         {
-            // Charges can only be placed and detonated while placing; the
-            // restart button stays available at all times.
+            // Charges can only be placed and detonated while placing.
             if (detonateButton != null)
                 detonateButton.interactable = state == LevelState.Placing;
+
+            // Restart must stay available in every state — including Scored,
+            // where the result panel is visible.
+            if (restartButton != null)
+                restartButton.interactable = true;
         }
 
         private void HandleLevelScored(float percent, int stars)
