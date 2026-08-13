@@ -91,7 +91,7 @@ namespace TNTGame.Core
             {
                 Debug.LogWarning("[AudioManager] No music track assigned. Drop a loopable file into " +
                                  "Assets/Audio (see README there) and assign it in the Inspector, " +
-                                 "or re-run TNT > Build Level 01 Scene.");
+                                 "or re-run TNT > Build Level Scenes.");
             }
 
             // Ambience is optional — silence is fine, no warning.

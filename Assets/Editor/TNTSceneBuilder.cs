@@ -14,19 +14,25 @@ using Object = UnityEngine.Object;
 namespace TNTGame.EditorTools
 {
     /// <summary>
-    /// One-shot bootstrapper for the vertical slice. Generates placeholder
-    /// sprites, the Block/TNT prefabs, the LevelData asset and the complete
-    /// Level_01 scene (camera, ground, demolition line, managers, canvas UI),
-    /// then registers the scene in Build Settings and forces portrait.
+    /// One-shot bootstrapper for the vertical slice. Generates the placeholder
+    /// sprites, Block/charge prefabs, LevelData assets, the LevelCatalog and one
+    /// complete scene per level theme (camera, backdrop, ground, demolition
+    /// line, managers, canvas UI incl. result panel and level select), then
+    /// registers all scenes in Build Settings and forces portrait.
+    ///
+    /// Level 1 "Skybound" (nautical/djinn palette) and Level 2 "Hands of Time"
+    /// (clockwork/vortex palette) differ only through the LevelTheme values
+    /// below; every asset lives in a per-theme folder so the levels can sit
+    /// side by side in Build Settings.
     ///
     /// Runs automatically once after the scripts are first imported (guarded by
-    /// the existence of the scene file); re-run manually via the TNT menu after
-    /// deleting Assets/Scenes/Level_01.unity for a clean rebuild.
+    /// the existence of the scene files); re-run manually via the TNT menu after
+    /// deleting the generated scenes for a clean rebuild.
     /// </summary>
     [InitializeOnLoad]
     public static class TNTSceneBuilder
     {
-        private const string ScenePath = "Assets/Scenes/Level_01.unity";
+        private const string ScenesPath = "Assets/Scenes";
         private const string ArtPath = "Assets/Art";
         private const string AudioPath = "Assets/Audio";
         private const string PrefabPath = "Assets/Prefabs/Gameplay";
@@ -41,7 +47,9 @@ namespace TNTGame.EditorTools
 
         private static void AutoBuild()
         {
-            if (File.Exists(ScenePath) || EditorApplication.isPlayingOrWillChangePlaymode)
+            bool scenesExist = File.Exists(SceneFilePath(SkyboundTheme()))
+                            && File.Exists(SceneFilePath(HandsOfTimeTheme()));
+            if (scenesExist || EditorApplication.isPlayingOrWillChangePlaymode)
                 return;
 
             try
@@ -51,44 +59,151 @@ namespace TNTGame.EditorTools
             catch (Exception e)
             {
                 Debug.LogException(e);
-                Debug.LogError("[TNT] Auto-build failed. Fix the error above, then run menu: TNT > Build Level 01 Scene.");
+                Debug.LogError("[TNT] Auto-build failed. Fix the error above, then run menu: TNT > Build Level Scenes.");
             }
         }
 
-        [MenuItem("TNT/Build Level 01 Scene")]
+        [MenuItem("TNT/Build Level Scenes")]
         public static void BuildAll()
         {
             EnsureFolder(ArtPath);
             EnsureFolder(PrefabPath);
             EnsureFolder(DataPath);
 
-            // --- Placeholder sprites (procedurally rasterised PNGs) ---
-            Sprite blockSprite = CreateSprite($"{ArtPath}/Block.png", 64, ShadeBlock);
-            Sprite tntSprite = CreateSprite($"{ArtPath}/TNT.png", 64, ShadeTnt);
-            Sprite starFilledSprite = CreateSprite($"{ArtPath}/StarFilled.png", 64, StarShade(new Color(1f, 0.85f, 0.15f)));
-            Sprite starEmptySprite = CreateSprite($"{ArtPath}/StarEmpty.png", 64, StarShade(new Color(0.45f, 0.45f, 0.5f)));
-            Sprite ringSprite = CreateSprite($"{ArtPath}/Ring.png", 64, ShadeRing);
-            Sprite pixelSprite = CreateSprite($"{ArtPath}/Pixel.png", 4, (x, y) => Color.white);
-            Sprite musicOnSprite = CreateSprite($"{ArtPath}/MusicOn.png", 64, (x, y) => ShadeMusicNote(x, y, false));
-            Sprite musicOffSprite = CreateSprite($"{ArtPath}/MusicOff.png", 64, (x, y) => ShadeMusicNote(x, y, true));
+            LevelTheme[] themes = { SkyboundTheme(), HandsOfTimeTheme() };
 
-            // --- Prefabs ---
-            GameObject blockPrefab = CreateBlockPrefab(blockSprite);
-            GameObject chargePrefab = CreateChargePrefab(tntSprite);
+            // --- Sprites, prefabs and level data, one set per theme ---
+            var assets = new LevelAssets[themes.Length];
+            for (int i = 0; i < themes.Length; i++)
+                assets[i] = BuildLevelAssets(themes[i]);
 
-            // --- Level data ---
-            LevelData levelData = CreateLevelData(blockPrefab);
+            // --- Catalog (references the LevelData assets) ---
+            LevelCatalog catalog = CreateCatalog(
+                System.Array.ConvertAll(assets, a => a.Data));
 
-            // --- Scene ---
-            BuildScene(levelData, chargePrefab, ringSprite, pixelSprite, starFilledSprite, starEmptySprite,
-                musicOnSprite, musicOffSprite);
+            // --- Scenes (reference the catalog) ---
+            for (int i = 0; i < themes.Length; i++)
+                BuildScene(themes[i], assets[i], catalog);
 
             // --- Project settings ---
-            EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
+            EditorBuildSettings.scenes = System.Array.ConvertAll(themes,
+                t => new EditorBuildSettingsScene(SceneFilePath(t), true));
             PlayerSettings.defaultInterfaceOrientation = UIOrientation.Portrait;
 
             AssetDatabase.SaveAssets();
-            Debug.Log("[TNT] Level_01 built successfully. Press Play: drag on the building to place TNT, then hit DETONATE.");
+            Debug.Log("[TNT] Level scenes built successfully. Press Play: drag on the building to place TNT, then hit DETONATE.");
+        }
+
+        private static string SceneFilePath(LevelTheme theme) => $"{ScenesPath}/{theme.SceneName}.unity";
+
+        // ------------------------------------------------------------------
+        // Level themes
+        // ------------------------------------------------------------------
+
+        /// <summary>Everything that distinguishes one level's generated content.</summary>
+        private sealed class LevelTheme
+        {
+            public string LevelId;       // PlayerPrefs progress key
+            public string DisplayName;   // level select label
+            public string SceneName;     // scene file stem, used by navigation
+            public string ArtDir;        // Assets/Art/<theme>
+            public string PrefabDir;     // Assets/Prefabs/Gameplay/<theme>
+            public string DataAssetName; // LevelData_<theme>
+
+            // Grid / tuning
+            public int TntCount;
+            public int Columns;
+            public int Rows;
+            public Vector2 BuildOrigin;
+
+            // World palette
+            public Color Background;
+            public Color BackdropBottom, BackdropTop;
+            public Color Ground;
+            public Color Line;
+            public Color IndicatorValid, IndicatorInvalid;
+            public Color BlockBody, BlockBorder;
+            public Func<float, float, Color> ChargeShade;
+
+            // UI palette
+            public Color StarFilled, StarEmpty;
+            public Color Button;
+            public Color Cta, CtaLabel;
+            public Color HudText;
+            public Color PanelVeil;
+            public Color MusicIcon;
+        }
+
+        /// <summary>Level 1 — Season 6 "Skybound": night blues, teal ocean glow, cursed gold.</summary>
+        private static LevelTheme SkyboundTheme()
+        {
+            return new LevelTheme
+            {
+                LevelId = "skybound",
+                DisplayName = "Skybound",
+                SceneName = "Level_01",
+                ArtDir = $"{ArtPath}/Skybound",
+                PrefabDir = $"{PrefabPath}/Skybound",
+                DataAssetName = "LevelData_Skybound",
+                TntCount = 3,
+                Columns = 5,
+                Rows = 6,
+                BuildOrigin = new Vector2(-1.1f, 0.25f),
+                Background = new Color(0.04f, 0.09f, 0.18f),
+                BackdropBottom = new Color(0.10f, 0.28f, 0.33f), // djinn-teal glow
+                BackdropTop = new Color(0.03f, 0.06f, 0.14f),    // deep navy
+                Ground = new Color(0.09f, 0.14f, 0.22f),
+                Line = new Color(0.15f, 0.85f, 0.75f, 0.9f),
+                IndicatorValid = new Color(0.25f, 0.9f, 0.8f, 0.65f),
+                IndicatorInvalid = new Color(0.9f, 0.3f, 0.2f, 0.4f),
+                BlockBody = new Color(0.16f, 0.26f, 0.40f),
+                BlockBorder = new Color(0.30f, 0.62f, 0.66f),
+                ChargeShade = ShadeCompass,
+                StarFilled = new Color(0.95f, 0.75f, 0.20f),
+                StarEmpty = new Color(0.50f, 0.42f, 0.24f),
+                Button = new Color(0.13f, 0.22f, 0.36f),
+                Cta = new Color(0.78f, 0.56f, 0.14f),
+                CtaLabel = new Color(0.07f, 0.12f, 0.24f),
+                HudText = new Color(0.90f, 0.70f, 0.25f),
+                PanelVeil = new Color(0.02f, 0.06f, 0.14f, 0.88f),
+                MusicIcon = new Color(0.90f, 0.70f, 0.25f),
+            };
+        }
+
+        /// <summary>Level 2 — Season 7 "Hands of Time": copper, bronze, rust, steel blue, clockwork gold.</summary>
+        private static LevelTheme HandsOfTimeTheme()
+        {
+            return new LevelTheme
+            {
+                LevelId = "handsoftime",
+                DisplayName = "Hands of Time",
+                SceneName = "Level_02",
+                ArtDir = $"{ArtPath}/HandsOfTime",
+                PrefabDir = $"{PrefabPath}/HandsOfTime",
+                DataAssetName = "LevelData_HandsOfTime",
+                TntCount = 5,
+                Columns = 6,
+                Rows = 7,
+                BuildOrigin = new Vector2(-1.375f, 0.25f), // centred: 5 gaps x 0.55
+                Background = new Color(0.10f, 0.07f, 0.05f),   // deep bronze
+                BackdropBottom = new Color(0.45f, 0.22f, 0.10f), // rusty-orange horizon
+                BackdropTop = new Color(0.06f, 0.09f, 0.14f),    // steel-blue sky
+                Ground = new Color(0.30f, 0.18f, 0.10f),         // rusted metal
+                Line = new Color(0.90f, 0.70f, 0.25f, 0.9f),     // clockwork gold
+                IndicatorValid = new Color(0.95f, 0.75f, 0.30f, 0.65f),
+                IndicatorInvalid = new Color(0.9f, 0.3f, 0.2f, 0.4f),
+                BlockBody = new Color(0.25f, 0.35f, 0.45f),      // steel-blue plates
+                BlockBorder = new Color(0.85f, 0.60f, 0.22f),    // clockwork-gold edges
+                ChargeShade = ShadeGear,
+                StarFilled = new Color(0.95f, 0.75f, 0.25f),
+                StarEmpty = new Color(0.40f, 0.30f, 0.18f),
+                Button = new Color(0.20f, 0.30f, 0.42f),         // steel blue
+                Cta = new Color(0.72f, 0.42f, 0.16f),            // copper call to action
+                CtaLabel = new Color(0.10f, 0.06f, 0.03f),
+                HudText = new Color(0.90f, 0.70f, 0.30f),
+                PanelVeil = new Color(0.08f, 0.05f, 0.03f, 0.88f),
+                MusicIcon = new Color(0.90f, 0.70f, 0.30f),
+            };
         }
 
         // ------------------------------------------------------------------
@@ -130,20 +245,69 @@ namespace TNTGame.EditorTools
             return AssetDatabase.LoadAssetAtPath<Sprite>(path);
         }
 
-        private static Color ShadeBlock(float x, float y)
+        // Building block: body plates edged with the theme's accent colour.
+        private static Color ShadeBlock(float x, float y, Color body, Color border)
         {
-            const float border = 5f;
-            bool isBorder = x < border || x >= 64f - border || y < border || y >= 64f - border;
-            return isBorder ? new Color(0.72f, 0.70f, 0.68f) : new Color(0.94f, 0.92f, 0.88f);
+            const float borderWidth = 5f;
+            bool isBorder = x < borderWidth || x >= 64f - borderWidth || y < borderWidth || y >= 64f - borderWidth;
+            return isBorder ? border : body;
         }
 
-        private static Color ShadeTnt(float x, float y)
+        /// <summary>Vertical gradient: theme glow colour at the bottom, dark sky at the top.</summary>
+        private static Color ShadeBackdrop(float x, float y, Color bottom, Color top)
         {
-            if (y < 7f || y >= 57f)
-                return new Color(0.42f, 0.07f, 0.05f); // dark top/bottom bands
-            if (x >= 12f && x < 20f)
-                return new Color(0.95f, 0.35f, 0.25f); // highlight stripe
-            return new Color(0.78f, 0.16f, 0.12f);     // red body
+            float t = y / 63f; // 0 at the bottom, 1 at the top
+            return Color.Lerp(bottom, top, t);
+        }
+
+        /// <summary>
+        /// The Skybound charge reads as the Cursed Compass: a cursed-gold rim
+        /// around a night-blue face, with a glowing teal needle pointing north
+        /// and a dim gold south half.
+        /// </summary>
+        private static Color ShadeCompass(float x, float y)
+        {
+            float d = Vector2.Distance(new Vector2(x, y), new Vector2(32f, 32f));
+            if (d >= 26f && d <= 31f)
+                return new Color(0.85f, 0.62f, 0.16f); // cursed gold rim
+            if (d > 26f)
+                return Color.clear;
+            if (d <= 4f)
+                return new Color(0.95f, 0.78f, 0.30f); // bright gold centre pin
+
+            // Needle: vertical diamond, teal glow to the north, dim gold south.
+            float halfWidth = (1f - Mathf.Abs(y - 32f) / 20f) * 4.5f;
+            if (halfWidth > 0f && Mathf.Abs(x - 32f) <= halfWidth)
+                return y >= 32f ? new Color(0.25f, 0.90f, 0.80f) : new Color(0.55f, 0.42f, 0.18f);
+
+            return new Color(0.07f, 0.12f, 0.24f); // night-blue face
+        }
+
+        /// <summary>
+        /// The Hands of Time charge reads as a Chronosteel gear: a toothed
+        /// bronze ring around a steel-blue hub, with a glowing clockwork-gold
+        /// time vortex at the centre.
+        /// </summary>
+        private static Color ShadeGear(float x, float y)
+        {
+            float dx = x - 32f, dy = y - 32f;
+            float d = Mathf.Sqrt(dx * dx + dy * dy);
+            float angle = Mathf.Atan2(dy, dx);
+
+            // Eight gear teeth: the outer radius breathes between 26 and 31.
+            float outer = Mathf.Sin(angle * 8f) > 0f ? 31f : 26f;
+            if (d > outer)
+                return Color.clear;
+            if (d >= 22f)
+                return new Color(0.80f, 0.55f, 0.20f); // bronze teeth and rim
+            if (d >= 16f)
+                return new Color(0.25f, 0.35f, 0.45f); // steel-blue hub ring
+            if (d <= 5f)
+                return new Color(1f, 0.92f, 0.62f);    // bright time-glow heart
+
+            // Vortex core: spiral bands of glowing gold and steel blue.
+            float swirl = Mathf.Sin(angle * 3f + d * 0.55f);
+            return swirl > 0f ? new Color(0.95f, 0.80f, 0.40f) : new Color(0.30f, 0.42f, 0.55f);
         }
 
         private static Color ShadeRing(float x, float y)
@@ -153,10 +317,11 @@ namespace TNTGame.EditorTools
         }
 
         /// <summary>
-        /// Placeholder music-toggle icon: a white quaver (ellipse head + stem).
-        /// The "off" variant carves out a diagonal band, reading as a slash.
+        /// Placeholder music-toggle icon: a quaver (ellipse head + stem) in the
+        /// theme's accent colour. The "off" variant carves out a diagonal band,
+        /// reading as a slash.
         /// </summary>
-        private static Color ShadeMusicNote(float x, float y, bool slashed)
+        private static Color ShadeMusicNote(float x, float y, bool slashed, Color color)
         {
             float hx = (x - 26f) / 12f, hy = (y - 20f) / 9f;
             bool head = hx * hx + hy * hy <= 1f;
@@ -165,7 +330,7 @@ namespace TNTGame.EditorTools
                 return Color.clear;
             if (slashed && Mathf.Abs(x - y) < 6f)
                 return Color.clear;
-            return Color.white;
+            return color;
         }
 
         private static Func<float, float, Color> StarShade(Color fill)
@@ -204,7 +369,41 @@ namespace TNTGame.EditorTools
         // Prefabs and data
         // ------------------------------------------------------------------
 
-        private static GameObject CreateBlockPrefab(Sprite sprite)
+        /// <summary>All assets a generated scene needs, gathered in one bag.</summary>
+        private sealed class LevelAssets
+        {
+            public LevelData Data;
+            public GameObject ChargePrefab;
+            public Sprite Ring, Pixel, Backdrop, StarFilled, StarEmpty, MusicOn, MusicOff;
+        }
+
+        private static LevelAssets BuildLevelAssets(LevelTheme theme)
+        {
+            EnsureFolder(theme.ArtDir);
+            EnsureFolder(theme.PrefabDir);
+
+            var assets = new LevelAssets();
+            Sprite blockSprite = CreateSprite($"{theme.ArtDir}/Block.png", 64,
+                (x, y) => ShadeBlock(x, y, theme.BlockBody, theme.BlockBorder));
+            Sprite chargeSprite = CreateSprite($"{theme.ArtDir}/Charge.png", 64, theme.ChargeShade);
+            assets.StarFilled = CreateSprite($"{theme.ArtDir}/StarFilled.png", 64, StarShade(theme.StarFilled));
+            assets.StarEmpty = CreateSprite($"{theme.ArtDir}/StarEmpty.png", 64, StarShade(theme.StarEmpty));
+            assets.Ring = CreateSprite($"{theme.ArtDir}/Ring.png", 64, ShadeRing);
+            assets.Pixel = CreateSprite($"{theme.ArtDir}/Pixel.png", 4, (x, y) => Color.white);
+            assets.Backdrop = CreateSprite($"{theme.ArtDir}/Backdrop.png", 64,
+                (x, y) => ShadeBackdrop(x, y, theme.BackdropBottom, theme.BackdropTop));
+            assets.MusicOn = CreateSprite($"{theme.ArtDir}/MusicOn.png", 64,
+                (x, y) => ShadeMusicNote(x, y, false, theme.MusicIcon));
+            assets.MusicOff = CreateSprite($"{theme.ArtDir}/MusicOff.png", 64,
+                (x, y) => ShadeMusicNote(x, y, true, theme.MusicIcon));
+
+            GameObject blockPrefab = CreateBlockPrefab(theme, blockSprite);
+            assets.ChargePrefab = CreateChargePrefab(theme, chargeSprite);
+            assets.Data = CreateLevelData(theme, blockPrefab);
+            return assets;
+        }
+
+        private static GameObject CreateBlockPrefab(LevelTheme theme, Sprite sprite)
         {
             var go = new GameObject("Block");
             go.AddComponent<SpriteRenderer>().sprite = sprite;
@@ -216,47 +415,67 @@ namespace TNTGame.EditorTools
             go.AddComponent<BuildingBlock>();
             go.transform.localScale = new Vector3(0.5f, 0.5f, 1f);
 
-            GameObject prefab = PrefabUtility.SaveAsPrefabAsset(go, $"{PrefabPath}/Block.prefab");
+            GameObject prefab = PrefabUtility.SaveAsPrefabAsset(go, $"{theme.PrefabDir}/Block.prefab");
             Object.DestroyImmediate(go);
             return prefab;
         }
 
-        private static GameObject CreateChargePrefab(Sprite sprite)
+        private static GameObject CreateChargePrefab(LevelTheme theme, Sprite sprite)
         {
-            var go = new GameObject("TNTCharge");
+            var go = new GameObject("Charge");
             var renderer = go.AddComponent<SpriteRenderer>();
             renderer.sprite = sprite;
             renderer.sortingOrder = 5; // render above the building
             go.transform.localScale = new Vector3(0.35f, 0.35f, 1f);
 
-            GameObject prefab = PrefabUtility.SaveAsPrefabAsset(go, $"{PrefabPath}/TNTCharge.prefab");
+            GameObject prefab = PrefabUtility.SaveAsPrefabAsset(go, $"{theme.PrefabDir}/Charge.prefab");
             Object.DestroyImmediate(go);
             return prefab;
         }
 
-        private static LevelData CreateLevelData(GameObject blockPrefab)
+        private static LevelData CreateLevelData(LevelTheme theme, GameObject blockPrefab)
         {
             var data = ScriptableObject.CreateInstance<LevelData>();
+            data.levelId = theme.LevelId;
+            data.displayName = theme.DisplayName;
+            data.sceneName = theme.SceneName;
             data.blockPrefab = blockPrefab.GetComponent<BuildingBlock>();
-            // All other values keep the class defaults: 3 TNT, radius 2.5,
-            // force 12, 40/75 star thresholds, 3 s settle, 5x6 grid,
-            // origin (-1.1, 0.25), demolition line at y = 0.4.
-            AssetDatabase.CreateAsset(data, $"{DataPath}/Level_01.asset");
+            data.tntCount = theme.TntCount;
+            data.columns = theme.Columns;
+            data.rows = theme.Rows;
+            data.buildOrigin = theme.BuildOrigin;
+            // Blast values (radius 2.5, force 12), the 40/75 star thresholds,
+            // the 3 s settle timeout and the demolition line at y = 0.4 keep
+            // the class defaults for both levels.
+
+            string path = $"{DataPath}/{theme.DataAssetName}.asset";
+            AssetDatabase.CreateAsset(data, path); // overwrites any existing asset
             AssetDatabase.SaveAssets();
 
             // Re-load: the CreateInstance wrapper can be invalidated when the
             // import replaces the asset, and assigning it would serialize as
             // null. The loaded object is the authoritative persistent asset.
-            return AssetDatabase.LoadAssetAtPath<LevelData>($"{DataPath}/Level_01.asset");
+            return AssetDatabase.LoadAssetAtPath<LevelData>(path);
+        }
+
+        private static LevelCatalog CreateCatalog(LevelData[] levels)
+        {
+            var catalog = ScriptableObject.CreateInstance<LevelCatalog>();
+            catalog.levels = levels;
+
+            string path = $"{DataPath}/LevelCatalog.asset";
+            AssetDatabase.CreateAsset(catalog, path); // overwrites any existing asset
+            AssetDatabase.SaveAssets();
+
+            // See CreateLevelData: only the re-loaded asset is authoritative.
+            return AssetDatabase.LoadAssetAtPath<LevelCatalog>(path);
         }
 
         // ------------------------------------------------------------------
         // Scene construction
         // ------------------------------------------------------------------
 
-        private static void BuildScene(LevelData levelData, GameObject chargePrefab, Sprite ringSprite,
-            Sprite pixelSprite, Sprite starFilledSprite, Sprite starEmptySprite,
-            Sprite musicOnSprite, Sprite musicOffSprite)
+        private static void BuildScene(LevelTheme theme, LevelAssets assets, LevelCatalog catalog)
         {
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -268,27 +487,32 @@ namespace TNTGame.EditorTools
             cam.orthographic = true;
             cam.orthographicSize = 4f;
             cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = new Color(0.12f, 0.14f, 0.18f);
+            cam.backgroundColor = theme.Background;
             cameraGo.AddComponent<AudioListener>();
 
+            // Backdrop — full-screen gradient quad in the theme's sky colours.
+            CreateWorldSprite("Backdrop", assets.Backdrop, Color.white,
+                new Vector3(0f, 2f, 0f), new Vector3(24f, 14f, 1f), -5);
+
             // Ground — static collider so debris lands instead of falling forever.
-            GameObject ground = CreateWorldSprite("Ground", pixelSprite, new Color(0.24f, 0.25f, 0.29f),
+            GameObject ground = CreateWorldSprite("Ground", assets.Pixel, theme.Ground,
                 new Vector3(0f, -0.5f, 0f), new Vector3(16f, 1f, 1f), 0);
             ground.AddComponent<BoxCollider2D>().size = Vector2.one; // 16x1 world units after scale
 
             // Demolition line marker (LevelSetup snaps it to the configured Y).
-            GameObject line = CreateWorldSprite("DemolitionLine", pixelSprite, new Color(0.9f, 0.2f, 0.2f, 0.9f),
-                new Vector3(0f, levelData.demolitionLineY, 0f), new Vector3(16f, 0.05f, 1f), 1);
+            GameObject line = CreateWorldSprite("DemolitionLine", assets.Pixel, theme.Line,
+                new Vector3(0f, assets.Data.demolitionLineY, 0f), new Vector3(16f, 0.05f, 1f), 1);
 
             // Placement indicator (hidden until the player touches).
-            GameObject indicator = CreateWorldSprite("PlacementIndicator", ringSprite, new Color(0.2f, 1f, 0.3f, 0.65f),
+            GameObject indicator = CreateWorldSprite("PlacementIndicator", assets.Ring, theme.IndicatorValid,
                 Vector3.zero, new Vector3(0.7f, 0.7f, 1f), 10);
             indicator.SetActive(false);
 
             // Managers.
             var gmGo = new GameObject("GameManager");
             var gm = gmGo.AddComponent<GameManager>();
-            gm.EditorSetLevelData(levelData);
+            gm.EditorSetLevelData(assets.Data);
+            gm.EditorSetCatalog(catalog);
 
             var setupGo = new GameObject("LevelSetup");
             var setup = setupGo.AddComponent<LevelSetup>();
@@ -296,9 +520,11 @@ namespace TNTGame.EditorTools
 
             var placementGo = new GameObject("TouchPlacementController");
             var placement = placementGo.AddComponent<TouchPlacementController>();
-            SetRef(placement, "chargePrefab", chargePrefab);
+            SetRef(placement, "chargePrefab", assets.ChargePrefab);
             SetRef(placement, "indicator", indicator.GetComponent<SpriteRenderer>());
             SetRef(placement, "worldCamera", cam);
+            SetColor(placement, "validColor", theme.IndicatorValid);
+            SetColor(placement, "invalidColor", theme.IndicatorInvalid);
 
             // Persistent music player (survives the scene reload on restart).
             // Null tracks are tolerated: AudioManager warns and plays silence.
@@ -312,10 +538,10 @@ namespace TNTGame.EditorTools
             eventSystemGo.AddComponent<EventSystem>();
             eventSystemGo.AddComponent<StandaloneInputModule>();
 
-            BuildCanvas(gm, starFilledSprite, starEmptySprite, musicOnSprite, musicOffSprite);
+            BuildCanvas(theme, gm, assets, catalog);
 
             EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene, ScenePath);
+            EditorSceneManager.SaveScene(scene, SceneFilePath(theme));
         }
 
         private static GameObject CreateWorldSprite(string name, Sprite sprite, Color color,
@@ -331,8 +557,7 @@ namespace TNTGame.EditorTools
             return go;
         }
 
-        private static void BuildCanvas(GameManager gm, Sprite starFilledSprite, Sprite starEmptySprite,
-            Sprite musicOnSprite, Sprite musicOffSprite)
+        private static void BuildCanvas(LevelTheme theme, GameManager gm, LevelAssets assets, LevelCatalog catalog)
         {
             var canvasGo = new GameObject("Canvas");
             var canvas = canvasGo.AddComponent<Canvas>();
@@ -347,20 +572,26 @@ namespace TNTGame.EditorTools
             // HUD: TNT counter (top-left).
             Text tntText = CreateText("TNTText", canvasGo.transform, "TNT: 3", 56,
                 TextAnchor.MiddleLeft, new Vector2(0f, 1f), new Vector2(40f, -40f), new Vector2(420f, 110f));
+            tntText.color = theme.HudText;
+
+            // HUD: level select opener (top-left, below the counter).
+            Button levelsButton = CreateButton("LevelsButton", canvasGo.transform, "LEVELS", 32,
+                theme.Button, new Vector2(0f, 1f), new Vector2(40f, -170f), new Vector2(260f, 100f));
 
             // HUD: restart button (top-right).
             Button restartButton = CreateButton("RestartButton", canvasGo.transform, "RESTART", 34,
-                new Color(0.28f, 0.31f, 0.38f), new Vector2(1f, 1f), new Vector2(-40f, -40f), new Vector2(300f, 110f));
+                theme.Button, new Vector2(1f, 1f), new Vector2(-40f, -40f), new Vector2(300f, 110f));
 
             // HUD: music toggle (top-right, left of restart). Icon shows the state.
             Button musicButton = CreateButton("MusicButton", canvasGo.transform, "", 34,
-                new Color(0.28f, 0.31f, 0.38f), new Vector2(1f, 1f), new Vector2(-380f, -40f), new Vector2(110f, 110f));
+                theme.Button, new Vector2(1f, 1f), new Vector2(-380f, -40f), new Vector2(110f, 110f));
             Object.DestroyImmediate(musicButton.transform.Find("Label").gameObject);
-            Image musicIcon = CreateIcon(musicButton.transform, musicOnSprite);
+            Image musicIcon = CreateIcon(musicButton.transform, assets.MusicOn);
 
-            // HUD: detonate button (bottom centre).
+            // HUD: detonate button (bottom centre) — the theme's call to action.
             Button detonateButton = CreateButton("DetonateButton", canvasGo.transform, "DETONATE", 46,
-                new Color(0.85f, 0.3f, 0.1f), new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(460f, 170f));
+                theme.Cta, new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(460f, 170f));
+            detonateButton.GetComponentInChildren<Text>().color = theme.CtaLabel;
 
             // Result panel (hidden until scoring finishes).
             var panelGo = new GameObject("ResultPanel", typeof(RectTransform), typeof(Image));
@@ -370,10 +601,11 @@ namespace TNTGame.EditorTools
             panelRect.anchorMax = Vector2.one;
             panelRect.offsetMin = Vector2.zero;
             panelRect.offsetMax = Vector2.zero;
-            panelGo.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.85f);
+            panelGo.GetComponent<Image>().color = theme.PanelVeil;
 
-            CreateText("ResultTitle", panelGo.transform, "LEVEL COMPLETE", 64,
+            Text resultTitle = CreateText("ResultTitle", panelGo.transform, "LEVEL COMPLETE", 64,
                 TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, 430f), new Vector2(900f, 130f));
+            resultTitle.color = theme.HudText;
             Text scoreText = CreateText("ScoreText", panelGo.transform, "Destroyed: 0%", 52,
                 TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, 250f), new Vector2(900f, 110f));
 
@@ -387,24 +619,42 @@ namespace TNTGame.EditorTools
                 starRect.anchoredPosition = new Vector2((i - 1) * 200f, 20f);
                 starRect.sizeDelta = new Vector2(160f, 160f);
                 var starImage = starGo.GetComponent<Image>();
-                starImage.sprite = starEmptySprite;
+                starImage.sprite = assets.StarEmpty;
                 starImages[i] = starImage;
             }
 
+            // Result panel: onward navigation (next level / level select).
+            Button nextLevelButton = CreateButton("NextLevelButton", panelGo.transform, "NEXT LEVEL", 36,
+                theme.Cta, new Vector2(0.5f, 0.5f), new Vector2(-200f, -180f), new Vector2(360f, 120f));
+            nextLevelButton.GetComponentInChildren<Text>().color = theme.CtaLabel;
+            Button levelSelectButton = CreateButton("LevelSelectButton", panelGo.transform, "LEVEL SELECT", 36,
+                theme.Button, new Vector2(0.5f, 0.5f), new Vector2(200f, -180f), new Vector2(360f, 120f));
+
             panelGo.SetActive(false);
+
+            // Restart stays usable in every state: keep it above the full-screen
+            // result overlay, both visually and for raycasts.
+            restartButton.transform.SetAsLastSibling();
+
+            // Level select overlay (modal; created last so it sits above all HUD).
+            LevelSelectUI levelSelectUI = BuildLevelSelectPanel(theme, canvasGo.transform, assets, catalog);
 
             var ui = canvasGo.AddComponent<UIManager>();
             SetRef(ui, "tntCountText", tntText);
             SetRef(ui, "detonateButton", detonateButton);
             SetRef(ui, "restartButton", restartButton);
+            SetRef(ui, "levelsButton", levelsButton);
             SetRef(ui, "musicButton", musicButton);
             SetRef(ui, "musicIcon", musicIcon);
-            SetRef(ui, "musicOnSprite", musicOnSprite);
-            SetRef(ui, "musicOffSprite", musicOffSprite);
+            SetRef(ui, "musicOnSprite", assets.MusicOn);
+            SetRef(ui, "musicOffSprite", assets.MusicOff);
             SetRef(ui, "resultPanel", panelGo);
+            SetRef(ui, "nextLevelButton", nextLevelButton);
+            SetRef(ui, "levelSelectButton", levelSelectButton);
+            SetRef(ui, "levelSelectUI", levelSelectUI);
             SetRef(ui, "scoreText", scoreText);
-            SetRef(ui, "starFilledSprite", starFilledSprite);
-            SetRef(ui, "starEmptySprite", starEmptySprite);
+            SetRef(ui, "starFilledSprite", assets.StarFilled);
+            SetRef(ui, "starEmptySprite", assets.StarEmpty);
 
             var so = new SerializedObject(ui);
             SerializedProperty stars = so.FindProperty("starImages");
@@ -412,6 +662,99 @@ namespace TNTGame.EditorTools
             for (int i = 0; i < 3; i++)
                 stars.GetArrayElementAtIndex(i).objectReferenceValue = starImages[i];
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// Builds the modal level select overlay: a full-screen veil with one
+        /// entry row per catalog level. The controller lives on the canvas (not
+        /// the panel) so its Start runs even though the panel starts inactive.
+        /// </summary>
+        private static LevelSelectUI BuildLevelSelectPanel(LevelTheme theme, Transform canvasTransform,
+            LevelAssets assets, LevelCatalog catalog)
+        {
+            var panelGo = new GameObject("LevelSelectPanel", typeof(RectTransform), typeof(Image));
+            panelGo.transform.SetParent(canvasTransform, false);
+            var panelRect = (RectTransform)panelGo.transform;
+            panelRect.anchorMin = Vector2.zero;
+            panelRect.anchorMax = Vector2.one;
+            panelRect.offsetMin = Vector2.zero;
+            panelRect.offsetMax = Vector2.zero;
+            panelGo.GetComponent<Image>().color = theme.PanelVeil;
+
+            Text title = CreateText("Title", panelGo.transform, "SELECT LEVEL", 64,
+                TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, 430f), new Vector2(900f, 130f));
+            title.color = theme.HudText;
+
+            // One row per level, in catalog order (the play test finds them by name).
+            var entries = new LevelSelectEntry[2];
+            entries[0] = CreateLevelEntry("LevelEntry_Skybound", panelGo.transform,
+                new Vector2(0f, 120f), theme, assets);
+            entries[1] = CreateLevelEntry("LevelEntry_HandsOfTime", panelGo.transform,
+                new Vector2(0f, -80f), theme, assets);
+
+            Button closeButton = CreateButton("CloseButton", panelGo.transform, "CLOSE", 36,
+                theme.Button, new Vector2(0.5f, 0.5f), new Vector2(0f, -320f), new Vector2(360f, 120f));
+
+            panelGo.SetActive(false);
+
+            var levelSelectUI = canvasTransform.gameObject.AddComponent<LevelSelectUI>();
+            levelSelectUI.EditorSetCatalog(catalog);
+            SetRef(levelSelectUI, "panel", panelGo);
+            SetRef(levelSelectUI, "closeButton", closeButton);
+
+            var so = new SerializedObject(levelSelectUI);
+            SerializedProperty entriesProperty = so.FindProperty("entries");
+            entriesProperty.arraySize = entries.Length;
+            for (int i = 0; i < entries.Length; i++)
+                entriesProperty.GetArrayElementAtIndex(i).objectReferenceValue = entries[i];
+            so.ApplyModifiedPropertiesWithoutUndo();
+            return levelSelectUI;
+        }
+
+        /// <summary>One level select row: name label, three star slots and a LOCKED overlay.</summary>
+        private static LevelSelectEntry CreateLevelEntry(string name, Transform parent, Vector2 anchoredPosition,
+            LevelTheme theme, LevelAssets assets)
+        {
+            Button button = CreateButton(name, parent, "", 40,
+                theme.Button, new Vector2(0.5f, 0.5f), anchoredPosition, new Vector2(700f, 160f));
+            Object.DestroyImmediate(button.transform.Find("Label").gameObject);
+
+            Text nameText = CreateText("NameText", button.transform, "LEVEL", 44,
+                TextAnchor.MiddleLeft, new Vector2(0f, 0.5f), new Vector2(30f, 0f), new Vector2(320f, 160f));
+            nameText.color = theme.HudText;
+
+            var stars = new Image[3];
+            for (int i = 0; i < 3; i++)
+            {
+                var starGo = new GameObject($"Star{i + 1}", typeof(RectTransform), typeof(Image));
+                starGo.transform.SetParent(button.transform, false);
+                var starRect = (RectTransform)starGo.transform;
+                starRect.anchorMin = starRect.anchorMax = new Vector2(1f, 0.5f);
+                starRect.anchoredPosition = new Vector2(-250f + i * 100f, 0f);
+                starRect.sizeDelta = new Vector2(90f, 90f);
+                stars[i] = starGo.GetComponent<Image>();
+                stars[i].sprite = assets.StarEmpty;
+            }
+
+            Text lockText = CreateText("LockText", button.transform, "LOCKED", 40,
+                TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(700f, 160f));
+            lockText.color = new Color(0.90f, 0.45f, 0.30f);
+            lockText.gameObject.SetActive(false);
+
+            var entry = button.gameObject.AddComponent<LevelSelectEntry>();
+            SetRef(entry, "button", button);
+            SetRef(entry, "nameText", nameText);
+            SetRef(entry, "lockText", lockText);
+            SetRef(entry, "starFilledSprite", assets.StarFilled);
+            SetRef(entry, "starEmptySprite", assets.StarEmpty);
+
+            var so = new SerializedObject(entry);
+            SerializedProperty starProperty = so.FindProperty("starImages");
+            starProperty.arraySize = 3;
+            for (int i = 0; i < 3; i++)
+                starProperty.GetArrayElementAtIndex(i).objectReferenceValue = stars[i];
+            so.ApplyModifiedPropertiesWithoutUndo();
+            return entry;
         }
 
         // ------------------------------------------------------------------
@@ -490,6 +833,20 @@ namespace TNTGame.EditorTools
                 return;
             }
             property.objectReferenceValue = value;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>Assigns a private [SerializeField] Color from editor code.</summary>
+        private static void SetColor(Object target, string propertyName, Color value)
+        {
+            var so = new SerializedObject(target);
+            SerializedProperty property = so.FindProperty(propertyName);
+            if (property == null)
+            {
+                Debug.LogError($"[TNT] Property '{propertyName}' not found on {target.GetType().Name}.");
+                return;
+            }
+            property.colorValue = value;
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

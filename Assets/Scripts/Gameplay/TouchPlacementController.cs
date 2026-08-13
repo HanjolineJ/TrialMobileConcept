@@ -6,8 +6,8 @@ namespace TNTGame.Gameplay
 {
     /// <summary>
     /// Handles touch/mouse placement of TNT charges onto building blocks.
-    /// Press and hold to aim: an indicator follows the pointer and shows green
-    /// over a valid block, red otherwise. Release over a block to attach the
+    /// Press and hold to aim: an indicator follows the pointer and glows teal
+    /// over a valid block, ember-red otherwise. Release over a block to attach the
     /// charge to the block surface. Uses the legacy Input API, which covers
     /// both mouse (editor) and touch (device) while Active Input Handling is
     /// set to "Both". Ignores presses that start on UI elements.
@@ -25,8 +25,8 @@ namespace TNTGame.Gameplay
         [SerializeField] private Camera worldCamera;
 
         [Header("Feedback")]
-        [SerializeField] private Color validColor = new Color(0.2f, 1f, 0.3f, 0.65f);
-        [SerializeField] private Color invalidColor = new Color(1f, 0.25f, 0.25f, 0.4f);
+        [SerializeField] private Color validColor = new Color(0.25f, 0.9f, 0.8f, 0.65f);   // teal ocean glow
+        [SerializeField] private Color invalidColor = new Color(0.9f, 0.3f, 0.2f, 0.4f);   // ember red
 
         private GameManager gm;
         private bool pointerHeld;

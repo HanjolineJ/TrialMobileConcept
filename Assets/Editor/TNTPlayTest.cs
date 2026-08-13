@@ -5,17 +5,25 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using TNTGame.Core;
 
 namespace TNTGame.EditorTools
 {
     /// <summary>
-    /// Automated smoke test for the core loop: opens Level_01, enters Play mode,
-    /// places all three charges on bottom-row blocks, detonates, waits for the
-    /// score, then restarts and verifies the level returns to its initial state.
+    /// Automated smoke tests for the core loop, run in two modes:
     ///
-    /// Run via the TNT menu, or headless:
+    /// TNT/Run Play Test — opens Level_01, enters Play mode, places all charges
+    /// on bottom-row blocks, detonates, waits for the score, then restarts and
+    /// verifies the level returns to its initial state.
+    ///
+    /// TNT/Run Progression Test — plays Level_01 to the score screen, checks the
+    /// earned stars were saved, follows NEXT LEVEL into Level_02 (verifying its
+    /// grid, TNT count and persistent audio), then opens the level select and
+    /// jumps back to Level_01.
+    ///
+    /// Headless:
     /// Unity -batchmode -projectPath &lt;path&gt; -executeMethod TNTGame.EditorTools.TNTPlayTest.BuildAndPlayTest
     /// (no -quit; the test exits the editor itself with code 0 on success, 1 on failure).
     ///
@@ -24,17 +32,27 @@ namespace TNTGame.EditorTools
     /// </summary>
     public static class TNTPlayTest
     {
-        private const string ScenePath = "Assets/Scenes/Level_01.unity";
+        private const string Level1ScenePath = "Assets/Scenes/Level_01.unity";
         private const string RunningKey = "TNT.PlayTest.Running";
         private const string PhaseKey = "TNT.PlayTest.Phase";
         private const string DeadlineKey = "TNT.PlayTest.Deadline";
+        private const string ModeKey = "TNT.PlayTest.Mode";
 
         private enum Phase
         {
             WaitForLevel = 0,
             PlaceCharges = 1,
             WaitForScore = 2,
-            Restarting = 3
+            Restarting = 3,
+            AwaitingNextLevel = 4,
+            BackToLevel1 = 5,
+            InLevelSelect = 6
+        }
+
+        private enum TestMode
+        {
+            Restart = 0,
+            Progression = 1
         }
 
         /// <summary>Thrown by Fail to abort the current tick; caught in Tick.</summary>
@@ -46,19 +64,49 @@ namespace TNTGame.EditorTools
         [MenuItem("TNT/Run Play Test")]
         public static void BuildAndPlayTest()
         {
-            if (!File.Exists(ScenePath))
+            StartTest(TestMode.Restart);
+        }
+
+        [MenuItem("TNT/Run Progression Test")]
+        public static void RunProgressionTest()
+        {
+            StartTest(TestMode.Progression);
+        }
+
+        private static void StartTest(TestMode mode)
+        {
+            if (!File.Exists(Level1ScenePath))
                 TNTSceneBuilder.BuildAll();
 
-            // Deterministic music state: start from the default (on).
+            // Deterministic state: music starts on, no saved progress.
             PlayerPrefs.DeleteKey("TNT.MusicOn");
+            ProgressManager.DeleteStars("skybound");
+            ProgressManager.DeleteStars("handsoftime");
             PlayerPrefs.Save();
 
-            EditorSceneManager.OpenScene(ScenePath);
+            EditorSceneManager.OpenScene(Level1ScenePath);
             SessionState.SetBool(RunningKey, true);
             SessionState.SetInt(PhaseKey, (int)Phase.WaitForLevel);
+            SessionState.SetInt(ModeKey, (int)mode);
             SessionState.SetFloat(DeadlineKey, (float)EditorApplication.timeSinceStartup + 120f);
             EditorApplication.update += Tick;
+            EnsureGameView();
             EditorApplication.EnterPlaymode();
+        }
+
+        /// <summary>
+        /// The UI raycasts need a real screen area: with no visible Game view
+        /// the canvas has no valid size and every click misses. Opens/focuses
+        /// one before play mode starts. Batch mode always has a virtual screen.
+        /// </summary>
+        private static void EnsureGameView()
+        {
+            if (Application.isBatchMode)
+                return;
+
+            var gameViewType = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameView");
+            if (gameViewType != null)
+                EditorWindow.GetWindow(gameViewType);
         }
 
         [InitializeOnLoadMethod]
@@ -101,8 +149,9 @@ namespace TNTGame.EditorTools
                     if (gm == null || gm.State != LevelState.Placing || gm.BlockCount == 0)
                         return; // scene still initialising
 
-                    int expected = gm.Data.columns * gm.Data.rows;
-                    Expect(gm.BlockCount == expected, $"Expected {expected} blocks, found {gm.BlockCount}.");
+                    Expect(gm.Data.levelId == "skybound", $"Test must start in Level 1, found '{gm.Data.levelId}'.");
+                    Expect(gm.BlockCount == gm.Data.columns * gm.Data.rows,
+                        $"Expected {gm.Data.columns * gm.Data.rows} blocks, found {gm.BlockCount}.");
                     Expect(gm.TntRemaining == gm.Data.tntCount, "TNT count should start full.");
                     Expect(UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length == 1,
                         "Exactly one AudioListener must be present.");
@@ -122,7 +171,7 @@ namespace TNTGame.EditorTools
                 }
                 case Phase.PlaceCharges:
                 {
-                    // Attach all three charges across the bottom row.
+                    // Attach all charges across the bottom row.
                     for (int i = 0; i < gm.Data.tntCount; i++)
                     {
                         int blockIndex = i * (gm.Data.columns - 1) / Math.Max(1, gm.Data.tntCount - 1);
@@ -148,8 +197,19 @@ namespace TNTGame.EditorTools
 
                     // Result panel (logo + stars) visible at this point.
                     ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_result.png"));
-                    ClickButton("RestartButton");
-                    SessionState.SetInt(PhaseKey, (int)Phase.Restarting);
+
+                    if ((TestMode)SessionState.GetInt(ModeKey, 0) == TestMode.Progression)
+                    {
+                        Expect(ProgressManager.GetStars("skybound") > 0,
+                            "Completing Level 1 should save its stars.");
+                        ClickButton("NextLevelButton");
+                        SessionState.SetInt(PhaseKey, (int)Phase.AwaitingNextLevel);
+                    }
+                    else
+                    {
+                        ClickButton("RestartButton");
+                        SessionState.SetInt(PhaseKey, (int)Phase.Restarting);
+                    }
                     break;
                 }
                 case Phase.Restarting:
@@ -167,6 +227,66 @@ namespace TNTGame.EditorTools
                     Pass();
                     break;
                 }
+                case Phase.AwaitingNextLevel:
+                {
+                    // Until the scene swap finishes we still see the Level 1 instance.
+                    if (gm == null || gm.Data.levelId != "handsoftime"
+                        || gm.State != LevelState.Placing || gm.BlockCount == 0)
+                        return;
+
+                    Expect(SceneManager.GetActiveScene().name == "Level_02",
+                        "Next Level should load the Level_02 scene.");
+                    Expect(gm.Data.columns == 6 && gm.Data.rows == 7,
+                        $"Hands of Time should use a 6x7 grid, found {gm.Data.columns}x{gm.Data.rows}.");
+                    Expect(gm.BlockCount == 42, $"Expected 42 blocks, found {gm.BlockCount}.");
+                    Expect(gm.Data.tntCount == 5, $"Hands of Time should allow 5 TNT, found {gm.Data.tntCount}.");
+                    Expect(gm.TntRemaining == 5, "Level 2 TNT count should start full.");
+                    Expect(UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length == 1,
+                        "Exactly one AudioListener must be present in Level 2.");
+                    Expect(AudioManager.Instance != null && AudioManager.Instance.IsMusicOn,
+                        "Music preference should persist into Level 2.");
+
+                    ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_level2.png"));
+
+                    // Level select: opens modally, both entries unlocked by now.
+                    ClickButton("LevelsButton");
+                    Expect(GameObject.Find("LevelSelectPanel") != null,
+                        "Level select panel should be active after clicking LEVELS.");
+                    var level1Entry = GameObject.Find("LevelEntry_Skybound");
+                    var level2Entry = GameObject.Find("LevelEntry_HandsOfTime");
+                    Expect(level1Entry != null && level2Entry != null, "Both level entries must exist.");
+                    Expect(level1Entry.GetComponent<Button>().interactable,
+                        "Level 1 entry must stay unlocked.");
+                    Expect(level2Entry.GetComponent<Button>().interactable,
+                        "Level 2 entry should be unlocked after completing Level 1.");
+
+                    SessionState.SetInt(PhaseKey, (int)Phase.InLevelSelect);
+                    break;
+                }
+                case Phase.InLevelSelect:
+                {
+                    // One tick after opening: freshly activated UI needs a canvas
+                    // update before its screen positions are raycastable.
+                    Expect(GameObject.Find("LevelSelectPanel") != null,
+                        "Level select panel should still be open.");
+                    ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_levelselect.png"));
+                    ClickButton("LevelEntry_Skybound");
+                    SessionState.SetInt(PhaseKey, (int)Phase.BackToLevel1);
+                    break;
+                }
+                case Phase.BackToLevel1:
+                {
+                    if (gm == null || gm.Data.levelId != "skybound"
+                        || gm.State != LevelState.Placing || gm.BlockCount == 0)
+                        return;
+
+                    Expect(gm.BlockCount == gm.Data.columns * gm.Data.rows,
+                        "Level 1 should be fully rebuilt when re-entered.");
+                    Expect(gm.TntRemaining == gm.Data.tntCount,
+                        "Level 1 TNT count should start full when re-entered.");
+                    Pass();
+                    break;
+                }
             }
         }
 
@@ -180,6 +300,14 @@ namespace TNTGame.EditorTools
         {
             var buttonGo = GameObject.Find(buttonName);
             Expect(buttonGo != null, $"{buttonName} not found in the scene.");
+
+            // A button may have become visible this very frame (e.g. the level
+            // select panel); force the canvas to catch up before reading
+            // screen positions, or the raycast below can miss everything.
+            Canvas.ForceUpdateCanvases();
+
+            Expect(Screen.width > 0 && Screen.height > 0,
+                "Screen size is zero — open a Game view (or run headless) before running the test.");
 
             var eventSystem = EventSystem.current;
             Expect(eventSystem != null, "No EventSystem in the scene.");
@@ -195,7 +323,8 @@ namespace TNTGame.EditorTools
 
             var results = new List<RaycastResult>();
             raycaster.Raycast(pointer, results);
-            Expect(results.Count > 0, $"Nothing hit at {buttonName}'s position.");
+            Expect(results.Count > 0,
+                $"Nothing hit at {buttonName}'s position ({pointer.position.x:0},{pointer.position.y:0}; screen {Screen.width}x{Screen.height}).");
 
             GameObject clickTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(results[0].gameObject);
             Expect(clickTarget == buttonGo,

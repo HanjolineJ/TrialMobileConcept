@@ -6,7 +6,7 @@ namespace TNTGame.UI
 {
     /// <summary>
     /// Mobile HUD and result panel. Shows the remaining TNT count, wires the
-    /// detonate/restart buttons to the GameManager, and reveals the result
+    /// detonate/restart/next-level/level-select buttons, and reveals the result
     /// panel (percent destroyed + 1–3 stars) when scoring finishes.
     /// All references are assigned in the Inspector; the script only listens
     /// to GameManager events and never drives game logic itself.
@@ -22,6 +22,9 @@ namespace TNTGame.UI
 
         [Tooltip("Button that reloads the level.")]
         [SerializeField] private Button restartButton;
+
+        [Tooltip("Button that opens the level select overlay.")]
+        [SerializeField] private Button levelsButton;
 
         [Header("Music Toggle")]
         [Tooltip("Button toggling the background music on/off.")]
@@ -39,6 +42,15 @@ namespace TNTGame.UI
         [Header("Result Panel")]
         [Tooltip("Root object of the result panel, hidden until scoring finishes.")]
         [SerializeField] private GameObject resultPanel;
+
+        [Tooltip("Button on the result panel that loads the next level (hidden on the last level).")]
+        [SerializeField] private Button nextLevelButton;
+
+        [Tooltip("Button on the result panel that opens the level select overlay.")]
+        [SerializeField] private Button levelSelectButton;
+
+        [Tooltip("The level select overlay controller.")]
+        [SerializeField] private LevelSelectUI levelSelectUI;
 
         [Tooltip("Label showing the destroyed percentage.")]
         [SerializeField] private Text scoreText;
@@ -74,6 +86,15 @@ namespace TNTGame.UI
                 restartButton.onClick.AddListener(gm.RestartLevel);
             if (musicButton != null)
                 musicButton.onClick.AddListener(HandleMusicClicked);
+            if (nextLevelButton != null)
+            {
+                nextLevelButton.onClick.AddListener(gm.LoadNextLevel);
+                nextLevelButton.gameObject.SetActive(gm.HasNextLevel);
+            }
+            if (levelSelectButton != null && levelSelectUI != null)
+                levelSelectButton.onClick.AddListener(levelSelectUI.Show);
+            if (levelsButton != null && levelSelectUI != null)
+                levelsButton.onClick.AddListener(levelSelectUI.Show);
 
             if (resultPanel != null)
                 resultPanel.SetActive(false);

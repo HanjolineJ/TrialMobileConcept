@@ -22,7 +22,8 @@ namespace TNTGame.Core
 
     /// <summary>
     /// Scene-level singleton that owns the level loop: TNT budget, detonation,
-    /// settling, scoring and restart. Place one instance in the level scene.
+    /// settling, scoring, restart and progression (saves stars, unlocks and
+    /// loads the next catalog level). Place one instance in the level scene.
     /// </summary>
     public class GameManager : MonoBehaviour
     {
@@ -32,6 +33,9 @@ namespace TNTGame.Core
         [Header("Configuration")]
         [Tooltip("Tuning data for this level (TNT count, blast values, star thresholds).")]
         [SerializeField] private LevelData levelData;
+
+        [Tooltip("All levels in play order; used to find the next level and to record progress.")]
+        [SerializeField] private LevelCatalog catalog;
 
         /// <summary>Raised when the remaining TNT count changes. Parameter: charges left.</summary>
         public event Action<int> TntCountChanged;
@@ -68,6 +72,9 @@ namespace TNTGame.Core
 
         /// <summary>Stars earned (1–3). Valid after scoring.</summary>
         public int Stars { get; private set; }
+
+        /// <summary>True when a following level exists in the catalog.</summary>
+        public bool HasNextLevel => catalog != null && catalog.NextAfter(levelData) != null;
 
         private void Awake()
         {
@@ -109,6 +116,13 @@ namespace TNTGame.Core
         public void EditorSetLevelData(LevelData data)
         {
             levelData = data;
+            UnityEditor.EditorUtility.SetDirty(this);
+        }
+
+        /// <summary>Editor-only hook for the scene builder; same rationale as EditorSetLevelData.</summary>
+        public void EditorSetCatalog(LevelCatalog levelCatalog)
+        {
+            catalog = levelCatalog;
             UnityEditor.EditorUtility.SetDirty(this);
         }
 #endif
@@ -183,6 +197,17 @@ namespace TNTGame.Core
         }
 
         /// <summary>
+        /// Loads the next catalog level's scene. No-op when this is the last
+        /// level or the catalog is missing.
+        /// </summary>
+        public void LoadNextLevel()
+        {
+            LevelData next = catalog != null ? catalog.NextAfter(levelData) : null;
+            if (next != null && !string.IsNullOrEmpty(next.sceneName))
+                SceneManager.LoadScene(next.sceneName);
+        }
+
+        /// <summary>
         /// Waits until every block is asleep (physics settled) or the timeout
         /// from the level data elapses, then computes the score.
         /// </summary>
@@ -245,6 +270,9 @@ namespace TNTGame.Core
 
             SetState(LevelState.Scored);
             LevelScored?.Invoke(ScorePercent, Stars);
+
+            // Completing the level (any rating) unlocks the next catalog level.
+            ProgressManager.SaveStars(levelData.levelId, Stars);
         }
 
         private void SetState(LevelState newState)

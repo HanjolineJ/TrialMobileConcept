@@ -21,7 +21,7 @@ Attribution (include in game credits/about screen):
 2. Name it `Music_MainTheme` (gameplay) or `Music_Ambience` (secondary layer),
    any extension — or select the **AudioManager** object in the Level_01 scene
    and assign files to its fields in the Inspector.
-3. If you rebuild the scene via **TNT → Build Level 01 Scene**, the builder
+3. If you rebuild the scenes via **TNT → Build Level Scenes**, the builder
    auto-wires clips by those names (any clip as fallback for the main theme).
 
 The `AudioManager` plays both layers on game start, loops them, and survives

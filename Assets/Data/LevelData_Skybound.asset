@@ -1,0 +1,30 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6f2e646f62d19437190f2f0251f48b05, type: 3}
+  m_Name: LevelData_Skybound
+  m_EditorClassIdentifier: 
+  levelId: skybound
+  displayName: Skybound
+  sceneName: Level_01
+  tntCount: 3
+  blastRadius: 2.5
+  blastForce: 12
+  twoStarThreshold: 40
+  threeStarThreshold: 75
+  settleTimeout: 3
+  displacementThreshold: 0.5
+  blockPrefab: {fileID: 1376206334432828004, guid: f7da5ee0f527c4744a63b501dc744eeb, type: 3}
+  columns: 5
+  rows: 6
+  blockSpacing: {x: 0.55, y: 0.55}
+  buildOrigin: {x: -1.1, y: 0.25}
+  demolitionLineY: 0.4

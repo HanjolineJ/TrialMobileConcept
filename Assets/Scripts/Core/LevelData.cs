@@ -10,6 +10,16 @@ namespace TNTGame.Core
     [CreateAssetMenu(fileName = "LevelData", menuName = "TNT/Level Data", order = 0)]
     public class LevelData : ScriptableObject
     {
+        [Header("Identity")]
+        [Tooltip("Stable id used as the PlayerPrefs key for saved stars (e.g. \"skybound\").")]
+        public string levelId = "level";
+
+        [Tooltip("Name shown on the level select screen.")]
+        public string displayName = "Level";
+
+        [Tooltip("Scene that runs this level. Must be registered in Build Settings.")]
+        public string sceneName = "";
+
         [Header("Explosives")]
         [Tooltip("How many TNT charges the player may place this level.")]
         [Min(1)] public int tntCount = 3;
