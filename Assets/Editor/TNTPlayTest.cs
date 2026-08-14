@@ -96,8 +96,13 @@ namespace TNTGame.EditorTools
 
         /// <summary>
         /// The UI raycasts need a real screen area: with no visible Game view
-        /// the canvas has no valid size and every click misses. Opens/focuses
-        /// one before play mode starts. Batch mode always has a virtual screen.
+        /// the canvas has no valid size and every click misses. A squashed or
+        /// hidden Game view is just as bad — at e.g. 2940x40 the HUD buttons
+        /// fall outside the screen and the raycasts hit nothing. So on top of
+        /// opening/focusing a Game view, pin its render resolution to the HUD's
+        /// reference size (TNTSceneBuilder uses 1080x1920) to make Screen
+        /// independent of the window layout. Batch mode always has a virtual
+        /// screen, so it needs neither.
         /// </summary>
         private static void EnsureGameView()
         {
@@ -107,6 +112,9 @@ namespace TNTGame.EditorTools
             var gameViewType = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameView");
             if (gameViewType != null)
                 EditorWindow.GetWindow(gameViewType);
+
+            PlayModeWindow.SetViewType(PlayModeWindow.PlayModeViewTypes.GameView);
+            PlayModeWindow.SetCustomRenderingResolution(1080, 1920, "TNT Test");
         }
 
         [InitializeOnLoadMethod]
