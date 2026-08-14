@@ -52,7 +52,13 @@ namespace TNTGame.UI
         {
             Refresh();
             if (panel != null)
+            {
+                // Modal: sit above whatever is currently showing (e.g. the
+                // result panel when LEVEL SELECT is tapped from the score
+                // screen), both visually and for raycasts.
+                panel.transform.SetAsLastSibling();
                 panel.SetActive(true);
+            }
         }
 
         /// <summary>Closes the overlay.</summary>

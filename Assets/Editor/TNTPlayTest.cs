@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -19,10 +20,12 @@ namespace TNTGame.EditorTools
     /// on bottom-row blocks, detonates, waits for the score, then restarts and
     /// verifies the level returns to its initial state.
     ///
-    /// TNT/Run Progression Test — plays Level_01 to the score screen, checks the
-    /// earned stars were saved, follows NEXT LEVEL into Level_02 (verifying its
-    /// grid, TNT count and persistent audio), then opens the level select and
-    /// jumps back to Level_01.
+    /// TNT/Run Progression Test — plays every level in the level catalog to
+    /// its score screen: Level_01 first, then each NEXT LEVEL in turn,
+    /// checking the saved stars, the grid, the TNT count and the persistent
+    /// audio for each. After the final level's result panel it opens the
+    /// level select (every entry unlocked by then) and jumps back to the
+    /// first level.
     ///
     /// Headless:
     /// Unity -batchmode -projectPath &lt;path&gt; -executeMethod TNTGame.EditorTools.TNTPlayTest.BuildAndPlayTest
@@ -39,6 +42,7 @@ namespace TNTGame.EditorTools
         private const string DeadlineKey = "TNT.PlayTest.Deadline";
         private const string ModeKey = "TNT.PlayTest.Mode";
         private const string WasMaximizedKey = "TNT.PlayTest.GameViewWasMaximized";
+        private const string LevelIndexKey = "TNT.PlayTest.LevelIndex";
 
         private enum Phase
         {
@@ -48,7 +52,8 @@ namespace TNTGame.EditorTools
             Restarting = 3,
             AwaitingNextLevel = 4,
             BackToLevel1 = 5,
-            InLevelSelect = 6
+            InLevelSelect = 6,
+            LevelSelectChecks = 7
         }
 
         private enum TestMode
@@ -80,16 +85,24 @@ namespace TNTGame.EditorTools
             if (!File.Exists(Level1ScenePath))
                 TNTSceneBuilder.BuildAll();
 
+            LevelCatalog catalog = LoadCatalog();
+            if (catalog == null)
+            {
+                Debug.LogError("[TNT] Play test aborted: no populated LevelCatalog asset found.");
+                return;
+            }
+
             // Deterministic state: music starts on, no saved progress.
             PlayerPrefs.DeleteKey("TNT.MusicOn");
-            ProgressManager.DeleteStars("skybound");
-            ProgressManager.DeleteStars("handsoftime");
+            foreach (LevelData level in catalog.levels)
+                ProgressManager.DeleteStars(level.levelId);
             PlayerPrefs.Save();
 
             EditorSceneManager.OpenScene(Level1ScenePath);
             SessionState.SetBool(RunningKey, true);
             SessionState.SetInt(PhaseKey, (int)Phase.WaitForLevel);
             SessionState.SetInt(ModeKey, (int)mode);
+            SessionState.SetInt(LevelIndexKey, 0);
             SessionState.SetFloat(DeadlineKey, (float)EditorApplication.timeSinceStartup + 120f);
             EditorApplication.update += Tick;
             EnsureGameView();
@@ -234,7 +247,10 @@ namespace TNTGame.EditorTools
                         return;
                     }
 
-                    Expect(gm.Data.levelId == "skybound", $"Test must start in Level 1, found '{gm.Data.levelId}'.");
+                    LevelCatalog catalog = LoadCatalog();
+                    Expect(catalog != null, "Level catalog missing.");
+                    Expect(gm.Data == catalog.levels[0],
+                        $"Test must start in Level 1 ('{catalog.levels[0].levelId}'), found '{gm.Data.levelId}'.");
                     Expect(gm.BlockCount == gm.Data.columns * gm.Data.rows,
                         $"Expected {gm.Data.columns * gm.Data.rows} blocks, found {gm.BlockCount}.");
                     Expect(gm.TntRemaining == gm.Data.tntCount, "TNT count should start full.");
@@ -276,22 +292,39 @@ namespace TNTGame.EditorTools
                     if (gm.State != LevelState.Scored)
                         return; // physics still settling
 
-                    Debug.Log($"[TNT] Blast result: {gm.ScorePercent:0.0}% destroyed, {gm.Stars} star(s).");
+                    Debug.Log($"[TNT] Blast result ({gm.Data.levelId}): {gm.ScorePercent:0.0}% destroyed, {gm.Stars} star(s).");
                     Expect(gm.ScorePercent > 10f, "Blast should destroy a measurable share of the building.");
                     Expect(gm.Stars >= 1 && gm.Stars <= 3, "Stars must be within 1..3.");
 
-                    // Result panel (logo + stars) visible at this point.
-                    ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_result.png"));
-
                     if ((TestMode)SessionState.GetInt(ModeKey, 0) == TestMode.Progression)
                     {
-                        Expect(ProgressManager.GetStars("skybound") > 0,
-                            "Completing Level 1 should save its stars.");
-                        ClickButton("NextLevelButton");
-                        SessionState.SetInt(PhaseKey, (int)Phase.AwaitingNextLevel);
+                        Expect(ProgressManager.GetStars(gm.Data.levelId) > 0,
+                            $"Completing '{gm.Data.levelId}' should save its stars.");
+                        ScreenCapture.CaptureScreenshot(Path.Combine("Logs", $"shot_result_{gm.Data.levelId}.png"));
+
+                        LevelCatalog catalog = LoadCatalog();
+                        Expect(catalog != null, "Level catalog missing.");
+                        int index = catalog.IndexOf(gm.Data);
+                        Expect(index >= 0, $"'{gm.Data.levelId}' is not listed in the level catalog.");
+
+                        if (index + 1 < catalog.levels.Length)
+                        {
+                            SessionState.SetInt(LevelIndexKey, index + 1);
+                            ClickButton("NextLevelButton");
+                            SessionState.SetInt(PhaseKey, (int)Phase.AwaitingNextLevel);
+                        }
+                        else
+                        {
+                            // Last level scored: NEXT LEVEL is hidden there, so
+                            // finish through the result panel's LEVEL SELECT button.
+                            ClickButton("LevelSelectButton");
+                            SessionState.SetInt(PhaseKey, (int)Phase.LevelSelectChecks);
+                        }
                     }
                     else
                     {
+                        // Result panel (logo + stars) visible at this point.
+                        ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_result.png"));
                         ClickButton("RestartButton");
                         SessionState.SetInt(PhaseKey, (int)Phase.Restarting);
                     }
@@ -314,54 +347,74 @@ namespace TNTGame.EditorTools
                 }
                 case Phase.AwaitingNextLevel:
                 {
-                    // Until the scene swap finishes we still see the Level 1 instance.
-                    if (gm == null || gm.Data.levelId != "handsoftime"
+                    LevelCatalog catalog = LoadCatalog();
+                    Expect(catalog != null, "Level catalog missing.");
+                    int index = SessionState.GetInt(LevelIndexKey, 0);
+                    Expect(index < catalog.levels.Length, $"Level index {index} is out of range.");
+                    LevelData expected = catalog.levels[index];
+
+                    // Until the scene swap finishes we still see the previous
+                    // level's instance.
+                    if (gm == null || gm.Data != expected
                         || gm.State != LevelState.Placing || gm.BlockCount == 0)
                         return;
 
-                    Expect(SceneManager.GetActiveScene().name == "Level_02",
-                        "Next Level should load the Level_02 scene.");
-                    Expect(gm.Data.columns == 6 && gm.Data.rows == 7,
-                        $"Hands of Time should use a 6x7 grid, found {gm.Data.columns}x{gm.Data.rows}.");
-                    Expect(gm.BlockCount == 42, $"Expected 42 blocks, found {gm.BlockCount}.");
-                    Expect(gm.Data.tntCount == 5, $"Hands of Time should allow 5 TNT, found {gm.Data.tntCount}.");
-                    Expect(gm.TntRemaining == 5, "Level 2 TNT count should start full.");
+                    Expect(SceneManager.GetActiveScene().name == expected.sceneName,
+                        $"Next Level should load the {expected.sceneName} scene.");
+                    Expect(gm.BlockCount == expected.columns * expected.rows,
+                        $"{expected.displayName} should use a {expected.columns}x{expected.rows} grid " +
+                        $"({expected.columns * expected.rows} blocks), found {gm.BlockCount}.");
+                    Expect(gm.TntRemaining == expected.tntCount,
+                        $"{expected.displayName} TNT count should start full ({expected.tntCount}).");
                     Expect(UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Length == 1,
-                        "Exactly one AudioListener must be present in Level 2.");
+                        "Exactly one AudioListener must be present.");
                     Expect(AudioManager.Instance != null && AudioManager.Instance.IsMusicOn,
-                        "Music preference should persist into Level 2.");
+                        $"Music preference should persist into {expected.displayName}.");
 
-                    ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_level2.png"));
+                    ScreenCapture.CaptureScreenshot(Path.Combine("Logs", $"shot_level_{expected.levelId}.png"));
 
-                    // Level select: opens modally, both entries unlocked by now.
-                    ClickButton("LevelsButton");
-                    Expect(GameObject.Find("LevelSelectPanel") != null,
-                        "Level select panel should be active after clicking LEVELS.");
-                    var level1Entry = GameObject.Find("LevelEntry_Skybound");
-                    var level2Entry = GameObject.Find("LevelEntry_HandsOfTime");
-                    Expect(level1Entry != null && level2Entry != null, "Both level entries must exist.");
-                    Expect(level1Entry.GetComponent<Button>().interactable,
-                        "Level 1 entry must stay unlocked.");
-                    Expect(level2Entry.GetComponent<Button>().interactable,
-                        "Level 2 entry should be unlocked after completing Level 1.");
+                    // Play this level to completion too.
+                    SessionState.SetInt(PhaseKey, (int)Phase.PlaceCharges);
+                    break;
+                }
+                case Phase.LevelSelectChecks:
+                {
+                    // One tick after opening: freshly activated UI needs a canvas
+                    // update before its screen positions are raycastable.
+                    var panel = GameObject.Find("LevelSelectPanel");
+                    Expect(panel != null, "Level select panel should be active after clicking LEVEL SELECT.");
+
+                    LevelCatalog catalog = LoadCatalog();
+                    Expect(catalog != null, "Level catalog missing.");
+                    var entries = panel.GetComponentsInChildren<Button>(true)
+                        .Where(b => b.name.StartsWith("LevelEntry_")).ToArray();
+                    Expect(entries.Length == catalog.levels.Length,
+                        $"Expected {catalog.levels.Length} level entries, found {entries.Length}.");
+                    foreach (Button entry in entries)
+                        Expect(entry.interactable, $"{entry.name} should be unlocked after completing every level.");
 
                     SessionState.SetInt(PhaseKey, (int)Phase.InLevelSelect);
                     break;
                 }
                 case Phase.InLevelSelect:
                 {
-                    // One tick after opening: freshly activated UI needs a canvas
-                    // update before its screen positions are raycastable.
-                    Expect(GameObject.Find("LevelSelectPanel") != null,
-                        "Level select panel should still be open.");
+                    var panel = GameObject.Find("LevelSelectPanel");
+                    Expect(panel != null, "Level select panel should still be open.");
                     ScreenCapture.CaptureScreenshot(Path.Combine("Logs", "shot_levelselect.png"));
-                    ClickButton("LevelEntry_Skybound");
+
+                    // Entries are created in catalog order: the first one is Level 1.
+                    var firstEntry = panel.GetComponentsInChildren<Button>(true)
+                        .FirstOrDefault(b => b.name.StartsWith("LevelEntry_"));
+                    Expect(firstEntry != null, "No level entries found in the level select panel.");
+                    ClickButton(firstEntry.name);
                     SessionState.SetInt(PhaseKey, (int)Phase.BackToLevel1);
                     break;
                 }
                 case Phase.BackToLevel1:
                 {
-                    if (gm == null || gm.Data.levelId != "skybound"
+                    LevelCatalog catalog = LoadCatalog();
+                    Expect(catalog != null, "Level catalog missing.");
+                    if (gm == null || gm.Data != catalog.levels[0]
                         || gm.State != LevelState.Placing || gm.BlockCount == 0)
                         return;
 
@@ -376,10 +429,25 @@ namespace TNTGame.EditorTools
         }
 
         /// <summary>
-        /// Clicks a HUD button through the real UI path: raycasts at the button's
-        /// screen position (fails if something else, e.g. the result panel,
-        /// intercepts the click) and then fires a genuine pointer click through
-        /// the EventSystem.
+        /// Loads the generated level catalog, which defines which levels the
+        /// progression test plays and in which order.
+        /// </summary>
+        private static LevelCatalog LoadCatalog()
+        {
+            foreach (string guid in AssetDatabase.FindAssets("t:LevelCatalog"))
+            {
+                var catalog = AssetDatabase.LoadAssetAtPath<LevelCatalog>(AssetDatabase.GUIDToAssetPath(guid));
+                if (catalog != null && catalog.levels.Length > 0)
+                    return catalog;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Clicks a HUD button through the real UI path: finds the topmost
+        /// raycastable graphic at the button's screen position (fails if
+        /// something else, e.g. the result panel, would intercept the click)
+        /// and then fires a genuine pointer click through the EventSystem.
         /// </summary>
         private static void ClickButton(string buttonName)
         {
@@ -388,7 +456,7 @@ namespace TNTGame.EditorTools
 
             // A button may have become visible this very frame (e.g. the level
             // select panel); force the canvas to catch up before reading
-            // screen positions, or the raycast below can miss everything.
+            // screen positions, or the hit test below can miss everything.
             Canvas.ForceUpdateCanvases();
 
             Expect(Screen.width > 0 && Screen.height > 0,
@@ -397,24 +465,44 @@ namespace TNTGame.EditorTools
             var eventSystem = EventSystem.current;
             Expect(eventSystem != null, "No EventSystem in the scene.");
 
-            var raycaster = UnityEngine.Object.FindFirstObjectByType<GraphicRaycaster>();
-            Expect(raycaster != null, "No GraphicRaycaster in the scene.");
+            var canvas = buttonGo.GetComponentInParent<Canvas>();
+            Expect(canvas != null, $"{buttonName} must live on a canvas.");
+            Expect(canvas.rootCanvas.renderMode == RenderMode.ScreenSpaceOverlay,
+                $"{buttonName} must live on a screen-space overlay canvas.");
+
+            Vector2 position = buttonGo.transform.position; // overlay canvas: world == screen
+
+            // uGUI draws graphics in hierarchy traversal order, so the LAST
+            // raycastable graphic containing the point is the one a real tap
+            // reaches. (GraphicRaycaster is no use here: it skips graphics the
+            // canvas render update hasn't processed yet — Graphic.depth == -1 —
+            // and in batch mode that update may not run between editor ticks,
+            // making freshly opened panels permanently unclickable.)
+            Graphic topmost = null;
+            var hitNames = new List<string>();
+            foreach (var graphic in canvas.rootCanvas.GetComponentsInChildren<Graphic>())
+            {
+                if (!graphic.isActiveAndEnabled || !graphic.raycastTarget)
+                    continue;
+                if (!RectTransformUtility.RectangleContainsScreenPoint(graphic.rectTransform, position, null))
+                    continue;
+                topmost = graphic;
+                hitNames.Add(graphic.name);
+            }
+
+            Expect(topmost != null,
+                $"Nothing hit at {buttonName}'s position ({position.x:0},{position.y:0}; screen {Screen.width}x{Screen.height}).");
+
+            GameObject clickTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(topmost.gameObject);
+            Expect(clickTarget == buttonGo,
+                $"{buttonName} blocked by '{topmost.gameObject.name}' — no overlay may intercept clicks. " +
+                $"Hits (topmost last): {string.Join(", ", hitNames)}");
 
             var pointer = new PointerEventData(eventSystem)
             {
-                position = buttonGo.transform.position, // overlay canvas: world == screen
+                position = position,
                 button = PointerEventData.InputButton.Left
             };
-
-            var results = new List<RaycastResult>();
-            raycaster.Raycast(pointer, results);
-            Expect(results.Count > 0,
-                $"Nothing hit at {buttonName}'s position ({pointer.position.x:0},{pointer.position.y:0}; screen {Screen.width}x{Screen.height}).");
-
-            GameObject clickTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(results[0].gameObject);
-            Expect(clickTarget == buttonGo,
-                $"{buttonName} blocked by '{results[0].gameObject.name}' — no overlay may intercept clicks.");
-
             ExecuteEvents.Execute(buttonGo, pointer, ExecuteEvents.pointerClickHandler);
         }
 
