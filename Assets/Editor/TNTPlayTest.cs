@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -37,6 +38,7 @@ namespace TNTGame.EditorTools
         private const string PhaseKey = "TNT.PlayTest.Phase";
         private const string DeadlineKey = "TNT.PlayTest.Deadline";
         private const string ModeKey = "TNT.PlayTest.Mode";
+        private const string WasMaximizedKey = "TNT.PlayTest.GameViewWasMaximized";
 
         private enum Phase
         {
@@ -97,12 +99,20 @@ namespace TNTGame.EditorTools
         /// <summary>
         /// The UI raycasts need a real screen area: with no visible Game view
         /// the canvas has no valid size and every click misses. A squashed or
-        /// hidden Game view is just as bad — at e.g. 2940x40 the HUD buttons
-        /// fall outside the screen and the raycasts hit nothing. So on top of
-        /// opening/focusing a Game view, pin its render resolution to the HUD's
-        /// reference size (TNTSceneBuilder uses 1080x1920) to make Screen
-        /// independent of the window layout. Batch mode always has a virtual
-        /// screen, so it needs neither.
+        /// tab-hidden Game view is just as bad — it stops repainting, so the
+        /// canvas keeps a stale layout while Screen reports a degenerate size
+        /// (e.g. 2940x40) and every raycast misses. Opening/focusing a Game
+        /// view is not enough either, so maximize it: a maximized view stays
+        /// visible and repaints for the whole run, keeping Screen and the
+        /// canvas layout consistent at whatever size the window provides.
+        /// The view is also reset to Free Aspect: with a fixed-resolution
+        /// entry selected the canvas lays out at that resolution while
+        /// Screen keeps reporting the window size, and clicks miss buttons
+        /// that are visibly under the pointer.
+        /// TickPhase re-asserts this until Screen looks sane, since the new
+        /// size can take a repaint to apply after play mode starts; the
+        /// previous maximized state is restored in Finish. Batch mode always
+        /// has a virtual screen, so it needs none of this.
         /// </summary>
         private static void EnsureGameView()
         {
@@ -110,11 +120,68 @@ namespace TNTGame.EditorTools
                 return;
 
             var gameViewType = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameView");
-            if (gameViewType != null)
-                EditorWindow.GetWindow(gameViewType);
+            if (gameViewType == null)
+                return;
 
-            PlayModeWindow.SetViewType(PlayModeWindow.PlayModeViewTypes.GameView);
-            PlayModeWindow.SetCustomRenderingResolution(1080, 1920, "TNT Test");
+            var gameView = EditorWindow.GetWindow(gameViewType);
+            if (!gameView.maximized)
+            {
+                SessionState.SetBool(WasMaximizedKey, false);
+                gameView.maximized = true;
+            }
+
+            SelectFreeAspect(gameView, gameViewType);
+        }
+
+        /// <summary>
+        /// Selects "Free Aspect" in the Game view's size dropdown via the
+        /// internal GameViewSizes API (there is no public API for it).
+        /// Best-effort: if the internals change, the current selection stays
+        /// and the test still runs against whatever size is active.
+        /// </summary>
+        private static void SelectFreeAspect(EditorWindow gameView, Type gameViewType)
+        {
+            try
+            {
+                var sizesType = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameViewSizes");
+                object sizes = typeof(ScriptableSingleton<>).MakeGenericType(sizesType)
+                    .GetProperty("instance").GetValue(null);
+                object group = sizesType.GetProperty("currentGroup").GetValue(sizes);
+                var getSize = group.GetType().GetMethod("GetGameViewSize");
+
+                int freeAspect = -1;
+                for (int i = 0; i < 32; i++)
+                {
+                    object size;
+                    try { size = getSize.Invoke(group, new object[] { i }); }
+                    catch { break; } // walked past the end of the list
+                    if ((bool)size.GetType().GetProperty("isFreeAspectRatio").GetValue(size))
+                    {
+                        freeAspect = i;
+                        break;
+                    }
+                }
+
+                if (freeAspect >= 0)
+                    gameViewType.GetProperty("selectedSizeIndex").SetValue(gameView, freeAspect);
+                else
+                    Debug.LogWarning("[TNT] No Free Aspect entry found in the Game view sizes.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[TNT] Could not reset the Game view to Free Aspect: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// A screen below this in either axis means the Game view has not
+        /// applied a real render surface yet (or is hidden) — UI positions
+        /// read from it would be off-screen. 100px is far below any usable
+        /// size, including the headless virtual screen.
+        /// </summary>
+        private static bool ScreenIsDegenerate()
+        {
+            return !Application.isBatchMode && (Screen.width < 100 || Screen.height < 100);
         }
 
         [InitializeOnLoadMethod]
@@ -156,6 +223,16 @@ namespace TNTGame.EditorTools
                 {
                     if (gm == null || gm.State != LevelState.Placing || gm.BlockCount == 0)
                         return; // scene still initialising
+
+                    if (ScreenIsDegenerate())
+                    {
+                        // The maximized Game view can take a repaint to report
+                        // its new size after play mode starts — re-assert and
+                        // wait a tick rather than clicking against a stale
+                        // canvas layout.
+                        EnsureGameView();
+                        return;
+                    }
 
                     Expect(gm.Data.levelId == "skybound", $"Test must start in Level 1, found '{gm.Data.levelId}'.");
                     Expect(gm.BlockCount == gm.Data.columns * gm.Data.rows,
@@ -367,6 +444,15 @@ namespace TNTGame.EditorTools
 
             if (EditorApplication.isPlaying)
                 EditorApplication.ExitPlaymode();
+
+            // Give the user's Game view its previous dock state back.
+            if (!Application.isBatchMode && !SessionState.GetBool(WasMaximizedKey, true))
+            {
+                SessionState.EraseBool(WasMaximizedKey);
+                var gameViewType = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameView");
+                if (gameViewType != null)
+                    EditorWindow.GetWindow(gameViewType).maximized = false;
+            }
 
             if (Application.isBatchMode)
                 EditorApplication.Exit(exitCode);
